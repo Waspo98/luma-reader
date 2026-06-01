@@ -1,0 +1,30 @@
+*.iml
+.gradle
+/local.properties
+/.idea/caches
+/.idea/libraries
+/.idea/modules.xml
+/.idea/workspace.xml
+/.idea/navEditor.xml
+/.idea/assetWizardSettings.xml
+.DS_Store
+build/
+/captures
+.externalNativeBuild
+.cxx
+local.properties
+
+# Debug/temp artifacts
+*.apk
+logcat.txt
+emulator_screen.png
+screenshot.png
+window_dump.xml
+temp_epub_extract/
+.kotlin/
+
+# Local test assets and temp scratch files
+*.epub
+temp.js
+pulled_file.html
+build_output.txt

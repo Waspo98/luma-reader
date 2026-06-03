@@ -245,6 +245,40 @@ actual fun ReaderWebView(
                         isStylingApplied = true
                     }
                 }
+
+                @android.webkit.JavascriptInterface
+                fun onLeftAreaTapped() {
+                    this@apply.post {
+                        if (localCurrentPage <= 1) {
+                            currentOnPrevChapter()
+                        } else {
+                            scope.launch {
+                                val width = this@apply.width.toFloat()
+                                translationXAnim.animateTo(width, spring(dampingRatio = Spring.DampingRatioLowBouncy, stiffness = Spring.StiffnessLow))
+                                this@apply.evaluateJavascript("window.goPrev()", null)
+                                translationXAnim.snapTo(-width)
+                                translationXAnim.animateTo(0f, spring(dampingRatio = Spring.DampingRatioLowBouncy, stiffness = Spring.StiffnessLow))
+                            }
+                        }
+                    }
+                }
+
+                @android.webkit.JavascriptInterface
+                fun onRightAreaTapped() {
+                    this@apply.post {
+                        if (localCurrentPage >= localTotalPages) {
+                            currentOnNextChapter()
+                        } else {
+                            scope.launch {
+                                val width = this@apply.width.toFloat()
+                                translationXAnim.animateTo(-width, spring(dampingRatio = Spring.DampingRatioLowBouncy, stiffness = Spring.StiffnessLow))
+                                this@apply.evaluateJavascript("window.goNext()", null)
+                                translationXAnim.snapTo(width)
+                                translationXAnim.animateTo(0f, spring(dampingRatio = Spring.DampingRatioLowBouncy, stiffness = Spring.StiffnessLow))
+                            }
+                        }
+                    }
+                }
             }, "LumaApp")
         }
     }
@@ -389,6 +423,8 @@ actual fun ReaderWebView(
             val file = File(book.unzippedDir, chapterPath)
             var htmlContent = if (file.exists()) file.readText() else ""
             if (htmlContent.isNotEmpty()) {
+                // Expand self-closing script tags so HTML5 parser doesn't swallow body content
+                htmlContent = htmlContent.replace("""<script(\s+[^>]*?)\s*/>""".toRegex(RegexOption.IGNORE_CASE), "<script$1></script>")
                 htmlContent = injectImageAspectRatios(htmlContent, book.unzippedDir, chapterPath)
             }
             
@@ -1255,6 +1291,28 @@ actual fun ReaderWebView(
                 };
 
 
+
+                // Register a document-level click listener to handle area taps and forward them to Compose.
+                document.addEventListener('click', function(e) {
+                    if (e.target.closest('a, img, button, input, select, textarea, [role="button"]')) {
+                        return;
+                    }
+                    var clickX = e.clientX;
+                    var width = window.lumaStableWidth || window.innerWidth || 360;
+                    if (clickX < width * 0.20) {
+                        if (window.LumaApp && window.LumaApp.onLeftAreaTapped) {
+                            window.LumaApp.onLeftAreaTapped();
+                        }
+                    } else if (clickX > width * 0.80) {
+                        if (window.LumaApp && window.LumaApp.onRightAreaTapped) {
+                            window.LumaApp.onRightAreaTapped();
+                        }
+                    } else {
+                        if (window.LumaApp && window.LumaApp.toggleUI) {
+                            window.LumaApp.toggleUI();
+                        }
+                    }
+                });
 
                 // Smart debounced snapProgress caller to prevent thrashing
                 var snapTimeout = null;

@@ -168,7 +168,7 @@ fun ReaderScreen(
         if (currentSpineIndex != pagerState.currentPage) {
             val movingForward = pagerState.currentPage > currentSpineIndex
             currentSpineIndex = pagerState.currentPage
-            currentProgression = if (movingForward) 0f else 0.95f
+            currentProgression = if (movingForward) 0f else 1.0f
             activeHashAnchor = null
             onProgressUpdated(pagerState.currentPage, currentProgression)
         }
@@ -320,7 +320,7 @@ fun ReaderScreen(
                     chapterPath = targetChapterPath,
                     preferences = preferences,
                     initialProgression = if (pageIndex == currentSpineIndex) currentProgression else {
-                        if (pageIndex > currentSpineIndex) 0f else 0.95f
+                        if (pageIndex > currentSpineIndex) 0f else 1.0f
                     },
                     isUiVisible = isUiVisible,
                     onProgressChanged = { newProgress ->

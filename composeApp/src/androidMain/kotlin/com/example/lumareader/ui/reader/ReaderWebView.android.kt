@@ -12,6 +12,12 @@ import android.webkit.ConsoleMessage
 import android.util.Log
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.spring
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
@@ -94,6 +100,12 @@ actual fun ReaderWebView(
     var activeImageUrl by remember { mutableStateOf<String?>(null) }
     var isPageLoaded by remember { mutableStateOf(false) }
     var isStylingApplied by remember { mutableStateOf(false) }
+    
+    var localCurrentPage by remember { mutableStateOf(1) }
+    var localTotalPages by remember { mutableStateOf(1) }
+    val scope = rememberCoroutineScope()
+    val translationXAnim = remember { Animatable(0f) }
+    var isDragging by remember { mutableStateOf(false) }
 
     // Use rememberUpdatedState for callbacks to prevent stale lambda captures in WebView JS interface
     val currentOnToggleUI by rememberUpdatedState(onToggleUI)
@@ -156,7 +168,7 @@ actual fun ReaderWebView(
         if ((context.applicationContext.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0) {
             WebView.setWebContentsDebuggingEnabled(true)
         }
-        LumaWebView(context).apply {
+        WebViewPool.acquire(context).apply {
             alpha = 0.01f
             setLayerType(android.view.View.LAYER_TYPE_HARDWARE, null)
             settings.apply {
@@ -211,6 +223,8 @@ actual fun ReaderWebView(
                 @android.webkit.JavascriptInterface
                 fun onPageInfo(currentPage: Int, totalPages: Int) {
                     this@apply.post {
+                        localCurrentPage = currentPage
+                        localTotalPages = totalPages
                         currentOnPageInfoChanged(currentPage, totalPages)
                     }
                 }
@@ -244,11 +258,10 @@ actual fun ReaderWebView(
         webView.alpha = if (isStylingApplied) 1f else 0.01f
     }
 
-    // Destroy WebView when this composable leaves composition
+    // Release WebView back to the pool when this composable leaves composition
     DisposableEffect(webView) {
         onDispose {
-            webView.stopLoading()
-            webView.destroy()
+            WebViewPool.release(webView)
         }
     }
 
@@ -375,6 +388,9 @@ actual fun ReaderWebView(
         try {
             val file = File(book.unzippedDir, chapterPath)
             var htmlContent = if (file.exists()) file.readText() else ""
+            if (htmlContent.isNotEmpty()) {
+                htmlContent = injectImageAspectRatios(htmlContent, book.unzippedDir, chapterPath)
+            }
             
             // FOUC Prevention: hide body/html instantly with correct background color prior to style injection
             val foucPreventionStyle = """
@@ -386,12 +402,29 @@ actual fun ReaderWebView(
                 </style>
             """.trimIndent()
             
-            if (htmlContent.contains("<head>")) {
-                htmlContent = htmlContent.replace("<head>", "<head>$foucPreventionStyle")
-            } else if (htmlContent.contains("<html>")) {
-                htmlContent = htmlContent.replace("<html>", "<html><head>$foucPreventionStyle</head>")
+            val xmlDeclaration = """^<\?xml[^?>]*\?>""".toRegex(RegexOption.IGNORE_CASE)
+            val xmlMatch = xmlDeclaration.find(htmlContent)
+            if (xmlMatch != null) {
+                val endOffset = xmlMatch.range.last + 1
+                val decl = htmlContent.substring(0, endOffset)
+                val rest = htmlContent.substring(endOffset)
+                
+                val updatedRest = if (rest.contains("<head>")) {
+                    rest.replace("<head>", "<head>$foucPreventionStyle")
+                } else if (rest.contains("<html>")) {
+                    rest.replace("<html>", "<html><head>$foucPreventionStyle</head>")
+                } else {
+                    foucPreventionStyle + rest
+                }
+                htmlContent = decl + updatedRest
             } else {
-                htmlContent = foucPreventionStyle + htmlContent
+                htmlContent = if (htmlContent.contains("<head>")) {
+                    htmlContent.replace("<head>", "<head>$foucPreventionStyle")
+                } else if (htmlContent.contains("<html>")) {
+                    htmlContent.replace("<html>", "<html><head>$foucPreventionStyle</head>")
+                } else {
+                    foucPreventionStyle + htmlContent
+                }
             }
             
             val parentPath = chapterPath.substringBeforeLast("/", "")
@@ -778,6 +811,24 @@ actual fun ReaderWebView(
                 };
 
                 // Helper functions defined at the top
+                window.findFirstVisibleElement = function() {
+                    var wrapper = document.getElementById('luma-reader-wrapper');
+                    if (!wrapper) return null;
+                    var elements = wrapper.querySelectorAll('p, h1, h2, h3, li, blockquote');
+                    var pageWidth = window.lumaStableWidth || window.innerWidth || 360;
+                    for (var i = 0; i < elements.length; i++) {
+                        var el = elements[i];
+                        var rect = el.getBoundingClientRect();
+                        if (rect.left >= -10 && rect.left < pageWidth - 10) {
+                            if (!el.id) {
+                                el.id = 'luma-anchor-' + i;
+                            }
+                            return el.id;
+                        }
+                    }
+                    return null;
+                };
+
                 window.getMaxScroll = function() {
                     var wrapper = document.getElementById('luma-reader-wrapper');
                     var wrapperScrollWidth = wrapper ? wrapper.scrollWidth : 0;
@@ -1000,7 +1051,23 @@ actual fun ReaderWebView(
                                 slideEl.style.transform = 'translateX(' + (-targetX) + 'px)';
                             }
                             window.currentTranslationX = targetX;
-                            window.targetHash = null; // Clear hash to unlock swipes
+                            window.targetHash = null;
+                            window.lumaSavedAnchorId = window.findFirstVisibleElement();
+                        }
+                    } else if (window.lumaSavedAnchorId) {
+                        var anchor = document.getElementById(window.lumaSavedAnchorId);
+                        if (anchor) {
+                            var anchorX = anchor.getBoundingClientRect().left + (window.currentTranslationX || 0);
+                            targetX = Math.floor(anchorX / pageWidth) * pageWidth;
+                            if (maxScroll > 0) {
+                                targetX = Math.max(0, Math.min(targetX, maxScroll));
+                            }
+                            var slideEl = document.getElementById('luma-reader-wrapper');
+                            if (slideEl) {
+                                slideEl.style.transition = 'none';
+                                slideEl.style.transform = 'translateX(' + (-targetX) + 'px)';
+                            }
+                            window.currentTranslationX = targetX;
                         } else {
                             if (maxScroll > 0) {
                                 var progressionToUse = $initialProgression;
@@ -1016,6 +1083,7 @@ actual fun ReaderWebView(
                                 }
                             }
                             window.currentTranslationX = targetX;
+                            window.lumaSavedAnchorId = window.findFirstVisibleElement();
                         }
                     } else {
                         if (maxScroll > 0) {
@@ -1032,6 +1100,7 @@ actual fun ReaderWebView(
                             }
                         }
                         window.currentTranslationX = targetX;
+                        window.lumaSavedAnchorId = window.findFirstVisibleElement();
                     }
                     
                     window.hasConsumedInitialProgression = true;
@@ -1046,6 +1115,7 @@ actual fun ReaderWebView(
                         LumaApp.onPageProgress(progress);
                         LumaApp.onPageInfo(currentPage, totalPages);
                     }
+                    window.lumaSavedAnchorId = window.findFirstVisibleElement();
                 };
 
                 // Inject or update style tag contents
@@ -1146,32 +1216,21 @@ actual fun ReaderWebView(
                     
                     var slideEl = document.getElementById('luma-reader-wrapper');
                     if (slideEl) {
-                        slideEl.style.transition = 'transform ' + duration + 'ms cubic-bezier(0.1, 0.9, 0.25, 1)';
+                        slideEl.style.transition = 'none';
                         slideEl.style.transform = 'translateX(' + (-coercedX) + 'px)';
                     }
                     
-                    window.transitionActive = true;
-                    if (window.transitionTimeout) {
-                        clearTimeout(window.transitionTimeout);
-                    }
+                    var progress = maxScroll > 0 ? coercedX / maxScroll : 0;
+                    var currentPage = Math.max(1, Math.round(coercedX / pageWidth) + 1);
+                    var totalPages = Math.max(1, Math.round(maxScroll / pageWidth) + 1);
                     
-                    window.transitionTimeout = setTimeout(function() {
-                        if (slideEl) {
-                            slideEl.style.transition = 'none';
-                        }
-                        window.transitionActive = false;
-                        window.transitionTimeout = null;
-                        
-                        var progress = maxScroll > 0 ? coercedX / maxScroll : 0;
-                        var currentPage = Math.max(1, Math.round(coercedX / pageWidth) + 1);
-                        var totalPages = Math.max(1, Math.round(maxScroll / pageWidth) + 1);
-                        
-                        if (window.lastReportedX !== coercedX) {
-                            window.lastReportedX = coercedX;
-                            LumaApp.onPageProgress(progress);
-                            LumaApp.onPageInfo(currentPage, totalPages);
-                        }
-                    }, duration);
+                    window.lumaSavedAnchorId = window.findFirstVisibleElement();
+
+                    if (window.lastReportedX !== coercedX) {
+                        window.lastReportedX = coercedX;
+                        LumaApp.onPageProgress(progress);
+                        LumaApp.onPageInfo(currentPage, totalPages);
+                    }
                 };
 
                 window.goNext = function() {
@@ -1181,7 +1240,7 @@ actual fun ReaderWebView(
                     if (curX >= maxScroll - 5) {
                         LumaApp.nextChapter();
                     } else {
-                        window.slideTo(curX + pageWidth, 300, false);
+                        window.slideTo(curX + pageWidth, 0, false);
                     }
                 };
 
@@ -1191,139 +1250,11 @@ actual fun ReaderWebView(
                     if (curX <= 5) {
                         LumaApp.prevChapter();
                     } else {
-                        window.slideTo(curX - pageWidth, 300, false);
+                        window.slideTo(curX - pageWidth, 0, false);
                     }
                 };
 
-                window.addEventListener('touchstart', function(e) {
-                    if (e.target && (e.target.tagName.toLowerCase() === 'img' || e.target.closest('img'))) return;
-                    
-                    if (e.touches.length === 1) {
-                        startX = e.touches[0].clientX;
-                        startY = e.touches[0].clientY;
-                        startTime = Date.now();
-                        startScrollX = window.currentTranslationX;
-                        isDragging = true;
-                        isSwipeDetermined = false;
-                        
-                        window.lumaMaxScroll = getMaxScroll();
-                    }
-                }, { passive: true });
 
-                window.addEventListener('touchmove', function(e) {
-                    if (e.target && (e.target.tagName.toLowerCase() === 'img' || e.target.closest('img'))) return;
-                    if (!isDragging) return;
-                    var currentX = e.touches[0].clientX;
-                    var currentY = e.touches[0].clientY;
-                    var deltaX = currentX - startX;
-                    var deltaY = currentY - startY;
-
-                    if (!isSwipeDetermined) {
-                        if (Math.abs(deltaX) > 8 || Math.abs(deltaY) > 8) {
-                            if (Math.abs(deltaX) > Math.abs(deltaY) * 1.3) {
-                                isSwipeDetermined = true;
-                                
-                                if (window.transitionActive) {
-                                    var currentTranslateX = getTranslationX();
-                                    var slideEl = document.getElementById('luma-reader-wrapper');
-                                    if (slideEl) {
-                                        slideEl.style.transition = 'none';
-                                        slideEl.style.transform = 'translateX(' + (-currentTranslateX) + 'px)';
-                                        window.currentTranslationX = currentTranslateX;
-                                    }
-                                    window.transitionActive = false;
-                                    if (window.transitionTimeout) {
-                                        clearTimeout(window.transitionTimeout);
-                                        window.transitionTimeout = null;
-                                    }
-                                    startScrollX = currentTranslateX;
-                                }
-                            } else {
-                                isDragging = false;
-                            }
-                        }
-                    }
-
-                    if (isSwipeDetermined && isDragging) {
-                        if (e.cancelable) e.preventDefault();
-                        
-                        var maxScroll = window.lumaMaxScroll !== undefined ? window.lumaMaxScroll : getMaxScroll();
-                        var targetScroll = startScrollX - deltaX;
-                        var visualDelta = deltaX;
-                        
-                        if (targetScroll < 0) {
-                            visualDelta = deltaX * 0.35;
-                        } else if (targetScroll > maxScroll) {
-                            var excess = targetScroll - maxScroll;
-                            visualDelta = deltaX - excess * 0.65;
-                        }
-                        
-                        var slideEl = document.getElementById('luma-reader-wrapper');
-                        if (slideEl) {
-                            var currentTranslate = -startScrollX + visualDelta;
-                            slideEl.style.transform = 'translateX(' + currentTranslate + 'px)';
-                        }
-                    }
-                }, { passive: false });
-
-                window.addEventListener('touchend', function(e) {
-                    var deltaX = e.changedTouches[0].clientX - startX;
-                    var deltaY = e.changedTouches[0].clientY - startY;
-                    var elapsedTime = Date.now() - startTime;
-                    var isGestureInProgress = isSwipeDetermined && isDragging;
-
-                    if (!isGestureInProgress && e.target && (
-                        e.target.tagName.toLowerCase() === 'img' || e.target.closest('img') ||
-                        e.target.tagName.toLowerCase() === 'a' || e.target.closest('a') ||
-                        e.target.tagName.toLowerCase() === 'image' || e.target.closest('image')
-                    )) return;
-
-                    if (elapsedTime < 300 && Math.abs(deltaX) < 15 && Math.abs(deltaY) < 15) {
-                        var tapX = e.changedTouches[0].clientX;
-                        var pageWidth = window.lumaStableWidth || window.innerWidth || 360;
-                        if (tapX < pageWidth * 0.20) {
-                            window.goPrev();
-                        } else if (tapX > pageWidth * 0.80) {
-                            window.goNext();
-                        } else {
-                            LumaApp.toggleUI();
-                        }
-                        isDragging = false;
-                        return;
-                    }
-
-                    if (!isDragging) return;
-                    isDragging = false;
-                    
-                    var maxScroll = window.lumaMaxScroll !== undefined ? window.lumaMaxScroll : getMaxScroll();
-                    var pageWidth = window.lumaStableWidth || window.innerWidth || 360;
-
-                    if (isSwipeDetermined) {
-                        if (Math.abs(deltaX) > 60 || (Math.abs(deltaX) > 20 && elapsedTime < 250)) {
-                            if (deltaX < 0) {
-                                if (startScrollX >= maxScroll - 5) {
-                                    window.slideTo(maxScroll, 0, false);
-                                    LumaApp.nextChapter();
-                                } else {
-                                    window.slideTo(startScrollX + pageWidth, 300, false);
-                                }
-                            } else {
-                                if (startScrollX <= 5) {
-                                    window.slideTo(0, 0, false);
-                                    LumaApp.prevChapter();
-                                } else {
-                                    window.slideTo(startScrollX - pageWidth, 300, false);
-                                }
-                            }
-                        } else {
-                            window.slideTo(startScrollX, 200, false);
-                        }
-                    } else {
-                        window.slideTo(startScrollX, 150, false);
-                    }
-                    
-                    window.lumaMaxScroll = undefined;
-                }, { passive: true });
 
                 // Smart debounced snapProgress caller to prevent thrashing
                 var snapTimeout = null;
@@ -1500,11 +1431,110 @@ actual fun ReaderWebView(
         modifier = modifier
             .fillMaxSize()
             .background(Color(AndroidColor.parseColor(webBgColor)))
+            .pointerInput(isStylingApplied) {
+                if (!isStylingApplied) return@pointerInput
+                detectTapGestures(
+                    onTap = { offset ->
+                        val tapX = offset.x
+                        val width = size.width.toFloat()
+                        if (tapX < width * 0.20f) {
+                            if (localCurrentPage <= 1) {
+                                currentOnPrevChapter()
+                            } else {
+                                scope.launch {
+                                    translationXAnim.animateTo(width, spring(dampingRatio = Spring.DampingRatioLowBouncy, stiffness = Spring.StiffnessLow))
+                                    webView.evaluateJavascript("window.goPrev()", null)
+                                    translationXAnim.snapTo(-width)
+                                    translationXAnim.animateTo(0f, spring(dampingRatio = Spring.DampingRatioLowBouncy, stiffness = Spring.StiffnessLow))
+                                }
+                            }
+                        } else if (tapX > width * 0.80f) {
+                            if (localCurrentPage >= localTotalPages) {
+                                currentOnNextChapter()
+                            } else {
+                                scope.launch {
+                                    translationXAnim.animateTo(-width, spring(dampingRatio = Spring.DampingRatioLowBouncy, stiffness = Spring.StiffnessLow))
+                                    webView.evaluateJavascript("window.goNext()", null)
+                                    translationXAnim.snapTo(width)
+                                    translationXAnim.animateTo(0f, spring(dampingRatio = Spring.DampingRatioLowBouncy, stiffness = Spring.StiffnessLow))
+                                }
+                            }
+                        } else {
+                            currentOnToggleUI()
+                        }
+                    }
+                )
+            }
+            .pointerInput(isStylingApplied, localCurrentPage, localTotalPages) {
+                if (!isStylingApplied) return@pointerInput
+                detectDragGestures(
+                    onDragStart = {
+                        isDragging = true
+                    },
+                    onDragEnd = {
+                        isDragging = false
+                        val currentVal = translationXAnim.value
+                        val width = size.width.toFloat()
+                        val swipeThreshold = width * 0.15f
+                        
+                        scope.launch {
+                            if (currentVal > swipeThreshold) {
+                                if (localCurrentPage <= 1) {
+                                    translationXAnim.animateTo(0f, spring(dampingRatio = Spring.DampingRatioLowBouncy, stiffness = Spring.StiffnessLow))
+                                    currentOnPrevChapter()
+                                } else {
+                                    translationXAnim.animateTo(width, spring(dampingRatio = Spring.DampingRatioLowBouncy, stiffness = Spring.StiffnessLow))
+                                    webView.evaluateJavascript("window.goPrev()", null)
+                                    translationXAnim.snapTo(-width)
+                                    translationXAnim.animateTo(0f, spring(dampingRatio = Spring.DampingRatioLowBouncy, stiffness = Spring.StiffnessLow))
+                                }
+                            } else if (currentVal < -swipeThreshold) {
+                                if (localCurrentPage >= localTotalPages) {
+                                    translationXAnim.animateTo(0f, spring(dampingRatio = Spring.DampingRatioLowBouncy, stiffness = Spring.StiffnessLow))
+                                    currentOnNextChapter()
+                                } else {
+                                    translationXAnim.animateTo(-width, spring(dampingRatio = Spring.DampingRatioLowBouncy, stiffness = Spring.StiffnessLow))
+                                    webView.evaluateJavascript("window.goNext()", null)
+                                    translationXAnim.snapTo(width)
+                                    translationXAnim.animateTo(0f, spring(dampingRatio = Spring.DampingRatioLowBouncy, stiffness = Spring.StiffnessLow))
+                                }
+                            } else {
+                                translationXAnim.animateTo(0f, spring(dampingRatio = Spring.DampingRatioLowBouncy, stiffness = Spring.StiffnessLow))
+                            }
+                        }
+                    },
+                    onDragCancel = {
+                        isDragging = false
+                        scope.launch {
+                            translationXAnim.animateTo(0f, spring(dampingRatio = Spring.DampingRatioLowBouncy, stiffness = Spring.StiffnessLow))
+                        }
+                    },
+                    onDrag = { change, dragAmount ->
+                        change.consume()
+                        val nextTranslation = translationXAnim.value + dragAmount.x
+                        
+                        val coercedTranslation = if (localCurrentPage <= 1 && nextTranslation > 0) {
+                            nextTranslation * 0.35f
+                        } else if (localCurrentPage >= localTotalPages && nextTranslation < 0) {
+                            nextTranslation * 0.35f
+                        } else {
+                            nextTranslation
+                        }
+                        
+                        scope.launch {
+                            translationXAnim.snapTo(coercedTranslation)
+                        }
+                    }
+                )
+            }
     ) {
         AndroidView(
             factory = { webView },
             modifier = Modifier
                 .fillMaxSize()
+                .graphicsLayer {
+                    translationX = translationXAnim.value
+                }
                 .alpha(if (isStylingApplied) 1f else 0.01f)
         )
         
@@ -1704,3 +1734,65 @@ actual fun ReaderWebView(
         }
     }
 }
+
+private fun getImageAspectRatio(imageFile: File): Float? {
+    if (!imageFile.exists() || !imageFile.isFile) return null
+    return try {
+        val options = android.graphics.BitmapFactory.Options().apply {
+            inJustDecodeBounds = true
+        }
+        android.graphics.BitmapFactory.decodeFile(imageFile.absolutePath, options)
+        val w = options.outWidth
+        val h = options.outHeight
+        if (w > 0 && h > 0) {
+            w.toFloat() / h.toFloat()
+        } else {
+            null
+        }
+    } catch (_: Exception) {
+        null
+    }
+}
+
+private fun injectImageAspectRatios(html: String, bookDir: String, chapterPath: String): String {
+    val chapterFile = File(bookDir, chapterPath)
+    val parentDir = chapterFile.parentFile ?: return html
+    val imgRegex = """<img\s+[^>]+>""".toRegex(RegexOption.IGNORE_CASE)
+    
+    return imgRegex.replace(html) { match ->
+        val imgTag = match.value
+        val srcRegex = """src=["']([^"']+)["']""".toRegex(RegexOption.IGNORE_CASE)
+        val srcMatch = srcRegex.find(imgTag)
+        val srcValue = srcMatch?.groupValues?.get(1) ?: return@replace imgTag
+        
+        val aspectRatio = try {
+            if (srcValue.startsWith("data:", ignoreCase = true) || 
+                srcValue.startsWith("http://", ignoreCase = true) || 
+                srcValue.startsWith("https://", ignoreCase = true)) {
+                null
+            } else {
+                val imgFile = File(parentDir, srcValue).canonicalFile
+                getImageAspectRatio(imgFile)
+            }
+        } catch (_: Exception) {
+            null
+        }
+        
+        if (aspectRatio != null) {
+            val styleRules = "aspect-ratio: $aspectRatio !important; width: 100% !important; height: auto !important;"
+            if (imgTag.contains("style=", ignoreCase = true)) {
+                val styleRegex = """style=["']([^"']*)["']""".toRegex(RegexOption.IGNORE_CASE)
+                styleRegex.replace(imgTag) { styleMatch ->
+                    val existingRules = styleMatch.groupValues[1]
+                    val newRules = if (existingRules.trim().endsWith(";")) "$existingRules $styleRules" else "$existingRules; $styleRules"
+                    "style=\"$newRules\""
+                }
+            } else {
+                imgTag.replaceFirst("<img", "<img style=\"$styleRules\"", ignoreCase = true)
+            }
+        } else {
+            imgTag
+        }
+    }
+}
+

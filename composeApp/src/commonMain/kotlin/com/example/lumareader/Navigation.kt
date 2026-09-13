@@ -32,6 +32,7 @@ fun MainNavigation(
     isSyncing: Boolean = false,
     syncEmail: String? = null,
     lastSyncResult: com.example.lumareader.data.sync.SyncResult? = null,
+    syncProgress: com.example.lumareader.data.sync.SyncProgress? = null,
     onConnectSync: () -> Unit = {},
     onDisconnectSync: () -> Unit = {},
     onTriggerSync: (com.example.lumareader.data.model.SyncScope) -> Unit = {},
@@ -150,7 +151,8 @@ fun MainNavigation(
                         onAssignBookToShelf = { bookId, shelf -> repository.assignBookToShelf(bookId, shelf) },
                         onRemoveBookFromShelf = { bookId, shelf -> repository.removeBookFromShelf(bookId, shelf) },
                         onAssignBooksToShelf = { ids, shelf -> repository.assignBooksToShelf(ids, shelf) },
-                        totalEpubSizeBytes = remember(books) { repository.getEpubStorageSizeBytes() }
+                        totalEpubSizeBytes = remember(books) { repository.getEpubStorageSizeBytes() },
+                        syncProgress = syncProgress
                     )
                 }
                 

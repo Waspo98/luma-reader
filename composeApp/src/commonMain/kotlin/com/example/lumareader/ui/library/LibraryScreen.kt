@@ -57,6 +57,7 @@ import com.example.lumareader.ui.components.SortBottomSheet
 import com.example.lumareader.ui.components.SyncConfigBottomSheet
 import com.example.lumareader.data.model.SyncScope
 import com.example.lumareader.data.sync.SyncResult
+import com.example.lumareader.data.sync.SyncProgress
 import com.example.lumareader.ui.utils.LumaSlider
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.ui.unit.Dp
@@ -83,6 +84,7 @@ fun LibraryScreen(
     isSyncing: Boolean = false,
     syncEmail: String? = null,
     lastSyncResult: SyncResult? = null,
+    syncProgress: SyncProgress? = null,
     onConnectSync: () -> Unit = {},
     onDisconnectSync: () -> Unit = {},
     onTriggerSync: (SyncScope) -> Unit = {},
@@ -388,6 +390,74 @@ fun LibraryScreen(
                 }
             )
         }
+
+        // Floating Sync Progress Pill (Top Center)
+        AnimatedVisibility(
+            visible = isSyncing && syncProgress != null && !isSelectionMode,
+            enter = slideInVertically(
+                initialOffsetY = { -it },
+                animationSpec = spring(dampingRatio = Spring.DampingRatioLowBouncy, stiffness = Spring.StiffnessLow)
+            ) + fadeIn(),
+            exit = slideOutVertically(
+                targetOffsetY = { -it },
+                animationSpec = spring(dampingRatio = Spring.DampingRatioLowBouncy, stiffness = Spring.StiffnessLow)
+            ) + fadeOut(),
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .statusBarsPadding()
+                .padding(top = 10.dp, start = 16.dp, end = 16.dp)
+        ) {
+            syncProgress?.let { progress ->
+                Surface(
+                    onClick = { showSyncBottomSheet = true },
+                    shape = RoundedCornerShape(24.dp),
+                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.4f)),
+                    shadowElevation = 6.dp,
+                    modifier = Modifier.wrapContentSize()
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        CircularProgressIndicator(
+                            progress = { progress.itemPercent },
+                            modifier = Modifier.size(18.dp),
+                            strokeWidth = 2.5.dp,
+                            color = MaterialTheme.colorScheme.primary,
+                            trackColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)
+                        )
+                        Column {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Text(
+                                    text = if (progress.isUpload) "Uploading (${progress.currentItem}/${progress.totalItems})" else "Downloading (${progress.currentItem}/${progress.totalItems})",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                                Text(
+                                    text = "• ${(progress.overallPercent * 100).toInt()}%",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            Text(
+                                text = progress.currentItemName,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurface,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.widthIn(max = 220.dp)
+                            )
+                        }
+                    }
+                }
+            }
+        }
     }
 
     if (showSortBottomSheet) {
@@ -408,6 +478,7 @@ fun LibraryScreen(
             lastSyncResult = lastSyncResult,
             totalEpubSizeBytes = totalEpubSizeBytes,
             bookCount = books.size,
+            syncProgress = syncProgress,
             onDismiss = { showSyncBottomSheet = false },
             onScopeSelected = { scope ->
                 onPreferencesChanged(

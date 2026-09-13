@@ -23,6 +23,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.lumareader.data.model.SyncPreferences
 import com.example.lumareader.data.model.SyncScope
+import com.example.lumareader.data.sync.SyncProgress
 import com.example.lumareader.data.sync.SyncResult
 import com.example.lumareader.theme.GoogleSans
 
@@ -35,6 +36,7 @@ fun SyncConfigBottomSheet(
     lastSyncResult: SyncResult?,
     totalEpubSizeBytes: Long = 0L,
     bookCount: Int = 0,
+    syncProgress: SyncProgress? = null,
     onDismiss: () -> Unit,
     onScopeSelected: (SyncScope) -> Unit,
     onConnectClick: () -> Unit,
@@ -407,6 +409,107 @@ fun SyncConfigBottomSheet(
                 }
             }
 
+            // Live Transfer Progress Card
+            AnimatedVisibility(
+                visible = isSyncing && syncProgress != null,
+                enter = fadeIn() + expandVertically(),
+                exit = fadeOut() + shrinkVertically()
+            ) {
+                syncProgress?.let { progress ->
+                    Surface(
+                        shape = RoundedCornerShape(16.dp),
+                        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.3f)),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(bottom = 16.dp)
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(16.dp),
+                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = if (progress.isUpload) Icons.Default.CloudUpload else Icons.Default.CloudDownload,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                    Text(
+                                        text = if (progress.isUpload) "Uploading to Drive" else "Downloading from Drive",
+                                        style = MaterialTheme.typography.titleSmall,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                }
+                                Surface(
+                                    shape = RoundedCornerShape(8.dp),
+                                    color = MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
+                                ) {
+                                    Text(
+                                        text = "${progress.currentItem} of ${progress.totalItems}",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                    )
+                                }
+                            }
+
+                            Text(
+                                text = progress.currentItemName,
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.onSurface,
+                                maxLines = 1,
+                                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                            )
+
+                            // Current Book Progress Bar
+                            val animatedItemProgress by androidx.compose.animation.core.animateFloatAsState(
+                                targetValue = progress.itemPercent,
+                                animationSpec = spring(dampingRatio = Spring.DampingRatioLowBouncy, stiffness = Spring.StiffnessLow),
+                                label = "ItemProgress"
+                            )
+                            LinearProgressIndicator(
+                                progress = { animatedItemProgress },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(8.dp)
+                                    .clip(RoundedCornerShape(4.dp)),
+                                color = MaterialTheme.colorScheme.primary,
+                                trackColor = MaterialTheme.colorScheme.surfaceContainerHigh
+                            )
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text(
+                                    text = "${formatBytes(progress.itemBytesTransferred)} / ${formatBytes(progress.itemTotalBytes)} (${(progress.itemPercent * 100).toInt()}%)",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                Text(
+                                    text = "Total: ${(progress.overallPercent * 100).toInt()}%",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
             // Sync Result Banner (if available)
             if (lastSyncResult != null) {
                 Spacer(modifier = Modifier.height(16.dp))
@@ -458,7 +561,7 @@ fun SyncConfigBottomSheet(
                     )
                     Spacer(modifier = Modifier.width(10.dp))
                     Text(
-                        text = "Syncing with Google Drive...",
+                        text = if (syncProgress != null) "Syncing (${(syncProgress.overallPercent * 100).toInt()}%)..." else "Syncing with Google Drive...",
                         fontWeight = FontWeight.SemiBold
                     )
                 } else {

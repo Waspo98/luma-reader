@@ -49,12 +49,21 @@ interface RemoteDriveClient {
     /**
      * Uploads a binary file (such as an EPUB) from [localFilePath] into the cloud app data space as [remoteFileName].
      */
-    suspend fun uploadBinaryFile(remoteFileName: String, localFilePath: String, mimeType: String = "application/epub+zip"): Boolean
+    suspend fun uploadBinaryFile(
+        remoteFileName: String,
+        localFilePath: String,
+        mimeType: String = "application/epub+zip",
+        onProgress: ((bytesTransferred: Long, totalBytes: Long) -> Unit)? = null
+    ): Boolean
 
     /**
      * Downloads a binary file named [remoteFileName] from cloud app data space to [destinationFilePath].
      */
-    suspend fun downloadBinaryFile(remoteFileName: String, destinationFilePath: String): Boolean
+    suspend fun downloadBinaryFile(
+        remoteFileName: String,
+        destinationFilePath: String,
+        onProgress: ((bytesTransferred: Long, totalBytes: Long) -> Unit)? = null
+    ): Boolean
 
     /**
      * Deletes a file by name from the app-data space, if it exists.
@@ -128,15 +137,29 @@ class LocalFileDriveClient(
         }
     }
 
-    override suspend fun uploadBinaryFile(remoteFileName: String, localFilePath: String, mimeType: String): Boolean {
+    override suspend fun uploadBinaryFile(
+        remoteFileName: String,
+        localFilePath: String,
+        mimeType: String,
+        onProgress: ((bytesTransferred: Long, totalBytes: Long) -> Unit)?
+    ): Boolean {
         val src = localFilePath.toPath()
         if (!fs.exists(src)) return false
         val dest = "$folderPath/$remoteFileName".toPath()
         return try {
             fs.createDirectories(folderPath)
+            val totalSize = fs.metadataOrNull(src)?.size ?: 0L
             fs.source(src).use { inSource ->
                 fs.sink(dest).buffer().use { outSink ->
-                    outSink.writeAll(inSource)
+                    val buffer = okio.Buffer()
+                    var bytesTransferred = 0L
+                    while (true) {
+                        val read = inSource.read(buffer, 16384L)
+                        if (read == -1L) break
+                        outSink.write(buffer, read)
+                        bytesTransferred += read
+                        onProgress?.invoke(bytesTransferred, totalSize)
+                    }
                 }
             }
             true
@@ -145,15 +168,28 @@ class LocalFileDriveClient(
         }
     }
 
-    override suspend fun downloadBinaryFile(remoteFileName: String, destinationFilePath: String): Boolean {
+    override suspend fun downloadBinaryFile(
+        remoteFileName: String,
+        destinationFilePath: String,
+        onProgress: ((bytesTransferred: Long, totalBytes: Long) -> Unit)?
+    ): Boolean {
         val src = "$folderPath/$remoteFileName".toPath()
         if (!fs.exists(src)) return false
         val dest = destinationFilePath.toPath()
         return try {
             dest.parent?.let { fs.createDirectories(it) }
+            val totalSize = fs.metadataOrNull(src)?.size ?: 0L
             fs.source(src).use { inSource ->
                 fs.sink(dest).buffer().use { outSink ->
-                    outSink.writeAll(inSource)
+                    val buffer = okio.Buffer()
+                    var bytesTransferred = 0L
+                    while (true) {
+                        val read = inSource.read(buffer, 16384L)
+                        if (read == -1L) break
+                        outSink.write(buffer, read)
+                        bytesTransferred += read
+                        onProgress?.invoke(bytesTransferred, totalSize)
+                    }
                 }
             }
             true

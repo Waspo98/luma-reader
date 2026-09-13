@@ -39,6 +39,24 @@ data class SyncResult(
     val timestamp: Long
 )
 
+@Serializable
+data class SyncProgress(
+    val currentItem: Int,
+    val totalItems: Int,
+    val currentItemName: String,
+    val itemBytesTransferred: Long = 0L,
+    val itemTotalBytes: Long = 0L,
+    val isUpload: Boolean = true
+) {
+    val itemPercent: Float
+        get() = if (itemTotalBytes > 0L) (itemBytesTransferred.toFloat() / itemTotalBytes.toFloat()).coerceIn(0f, 1f) else 0f
+
+    val overallPercent: Float
+        get() = if (totalItems > 0) {
+            ((currentItem - 1).coerceAtLeast(0) + itemPercent) / totalItems.toFloat()
+        } else 0f
+}
+
 class CloudSyncManager(
     private val fs: FileSystem = FileSystem.SYSTEM,
     private var remoteClient: RemoteDriveClient? = null,
@@ -48,6 +66,9 @@ class CloudSyncManager(
 
     private val _isSyncing = MutableStateFlow(false)
     val isSyncing: StateFlow<Boolean> = _isSyncing.asStateFlow()
+
+    private val _syncProgress = MutableStateFlow<SyncProgress?>(null)
+    val syncProgress: StateFlow<SyncProgress?> = _syncProgress.asStateFlow()
 
     private val _connectedEmail = MutableStateFlow<String?>(initialEmail)
     val connectedEmail: StateFlow<String?> = _connectedEmail.asStateFlow()
@@ -206,6 +227,7 @@ class CloudSyncManager(
 
                     var epubsUploaded = 0
                     var epubsDownloaded = 0
+                    var epubsFailed = 0
 
                     if (syncEpubs) {
                         val remoteFiles = try {
@@ -215,51 +237,103 @@ class CloudSyncManager(
                         }
                         val remoteFileMap = remoteFiles.associateBy { it.name }
 
-                        // 1. Upload local EPUBs that are missing on remote
-                        for (lb in localBooks) {
+                        val booksToUpload = localBooks.filter { lb ->
                             val epubPath = lb.epubFilePath
-                            if (!epubPath.isNullOrBlank() && fs.exists(epubPath.toPath())) {
-                                val remoteName = "epub_${lb.id}.epub"
-                                if (!remoteFileMap.containsKey(remoteName)) {
-                                    val ok = client.uploadBinaryFile(remoteName, epubPath)
-                                    if (ok) epubsUploaded++
-                                }
-                            }
+                            !epubPath.isNullOrBlank() && fs.exists(epubPath.toPath()) && !remoteFileMap.containsKey("epub_${lb.id}.epub")
                         }
 
-                        // 2. Download remote EPUBs that are missing locally
                         val booksDir = repository.getBooksDir()
                         try {
                             fs.createDirectories(booksDir.toPath())
                         } catch (_: Exception) {}
 
-                        for (rb in remoteBooks) {
+                        val booksToDownload = remoteBooks.filter { rb ->
                             val localMatch = localBooks.firstOrNull { it.id == rb.id }
                             val localEpubMissing = localMatch?.epubFilePath == null || !fs.exists(localMatch.epubFilePath.toPath())
-                            if (localEpubMissing) {
-                                val remoteName = "epub_${rb.id}.epub"
-                                if (remoteFileMap.containsKey(remoteName)) {
-                                    val safeTitle = rb.title.replace(Regex("[^a-zA-Z0-9_.-]"), "_").take(40)
-                                    val targetFile = "$booksDir/${safeTitle}_${rb.id}.epub"
-                                    val ok = client.downloadBinaryFile(remoteName, targetFile)
-                                    if (ok && fs.exists(targetFile.toPath())) {
-                                        try {
-                                            val imported = repository.importBook(targetFile)
-                                            val updatedImported = imported.copy(
-                                                currentSpineIndex = rb.currentSpineIndex,
-                                                currentProgression = rb.currentProgression,
-                                                lastLocatorJson = rb.lastLocatorJson,
-                                                lastReadTimestamp = rb.lastReadTimestamp,
-                                                collections = (imported.collections + rb.collections).distinct(),
-                                                annotations = (imported.annotations + rb.annotations).distinctBy { it.id }
-                                            )
-                                            repository.updateBook(updatedImported)
-                                            mergedBooksMap[rb.id] = updatedImported
-                                            epubsDownloaded++
-                                        } catch (e: Exception) {
-                                            e.printStackTrace()
-                                        }
-                                    }
+                            localEpubMissing && remoteFileMap.containsKey("epub_${rb.id}.epub")
+                        }
+
+                        val totalTransferItems = booksToUpload.size + booksToDownload.size
+                        var currentTransferIndex = 0
+
+                        // 1. Upload local EPUBs that are missing on remote
+                        for (lb in booksToUpload) {
+                            val epubPath = lb.epubFilePath ?: continue
+                            currentTransferIndex++
+                            val bookTitle = lb.title.ifBlank { "Book" }
+                            val remoteName = "epub_${lb.id}.epub"
+                            val fileSize = fs.metadataOrNull(epubPath.toPath())?.size ?: 0L
+
+                            _syncProgress.value = SyncProgress(
+                                currentItem = currentTransferIndex,
+                                totalItems = totalTransferItems,
+                                currentItemName = bookTitle,
+                                itemBytesTransferred = 0L,
+                                itemTotalBytes = fileSize,
+                                isUpload = true
+                            )
+
+                            val ok = client.uploadBinaryFile(remoteName, epubPath) { sent, total ->
+                                _syncProgress.value = SyncProgress(
+                                    currentItem = currentTransferIndex,
+                                    totalItems = totalTransferItems,
+                                    currentItemName = bookTitle,
+                                    itemBytesTransferred = sent,
+                                    itemTotalBytes = if (total > 0L) total else fileSize,
+                                    isUpload = true
+                                )
+                            }
+                            if (ok) {
+                                epubsUploaded++
+                            } else {
+                                epubsFailed++
+                            }
+                        }
+
+                        // 2. Download remote EPUBs that are missing locally
+                        for (rb in booksToDownload) {
+                            currentTransferIndex++
+                            val bookTitle = rb.title.ifBlank { "Book" }
+                            val remoteName = "epub_${rb.id}.epub"
+                            val remoteSize = remoteFileMap[remoteName]?.sizeBytes ?: 0L
+                            val safeTitle = rb.title.replace(Regex("[^a-zA-Z0-9_.-]"), "_").take(40)
+                            val targetFile = "$booksDir/${safeTitle}_${rb.id}.epub"
+
+                            _syncProgress.value = SyncProgress(
+                                currentItem = currentTransferIndex,
+                                totalItems = totalTransferItems,
+                                currentItemName = bookTitle,
+                                itemBytesTransferred = 0L,
+                                itemTotalBytes = remoteSize,
+                                isUpload = false
+                            )
+
+                            val ok = client.downloadBinaryFile(remoteName, targetFile) { received, total ->
+                                _syncProgress.value = SyncProgress(
+                                    currentItem = currentTransferIndex,
+                                    totalItems = totalTransferItems,
+                                    currentItemName = bookTitle,
+                                    itemBytesTransferred = received,
+                                    itemTotalBytes = if (total > 0L) total else remoteSize,
+                                    isUpload = false
+                                )
+                            }
+                            if (ok && fs.exists(targetFile.toPath())) {
+                                try {
+                                    val imported = repository.importBook(targetFile)
+                                    val updatedImported = imported.copy(
+                                        currentSpineIndex = rb.currentSpineIndex,
+                                        currentProgression = rb.currentProgression,
+                                        lastLocatorJson = rb.lastLocatorJson,
+                                        lastReadTimestamp = rb.lastReadTimestamp,
+                                        collections = (imported.collections + rb.collections).distinct(),
+                                        annotations = (imported.annotations + rb.annotations).distinctBy { it.id }
+                                    )
+                                    repository.updateBook(updatedImported)
+                                    mergedBooksMap[rb.id] = updatedImported
+                                    epubsDownloaded++
+                                } catch (e: Exception) {
+                                    e.printStackTrace()
                                 }
                             }
                         }
@@ -305,6 +379,8 @@ class CloudSyncManager(
 
                     val epubSummary = if (syncEpubs) {
                         when {
+                            epubsFailed > 0 && epubsUploaded > 0 -> ", $epubsUploaded EPUB(s) uploaded ($epubsFailed failed)"
+                            epubsFailed > 0 -> ", $epubsFailed EPUB(s) failed to upload"
                             epubsUploaded > 0 && epubsDownloaded > 0 -> ", $epubsUploaded EPUB(s) uploaded, $epubsDownloaded downloaded"
                             epubsUploaded > 0 -> ", $epubsUploaded EPUB(s) uploaded"
                             epubsDownloaded > 0 -> ", $epubsDownloaded EPUB(s) downloaded"
@@ -338,16 +414,30 @@ class CloudSyncManager(
             _lastSyncResult.value = result
             return result
         } catch (e: Exception) {
+            e.printStackTrace()
+            val errorMsg = when {
+                e.message?.contains("Failed to upload library catalog") == true ->
+                    "Failed to save library catalog to Google Drive. Check internet connection and Drive storage space."
+                e.message?.contains("Failed to upload reading positions") == true ->
+                    "Failed to save reading positions to Google Drive."
+                e is java.net.SocketTimeoutException ->
+                    "Sync timed out while communicating with Google Drive. Please retry."
+                e is java.net.UnknownHostException ->
+                    "No internet connection to reach Google Drive."
+                else ->
+                    "Sync failed: ${e.message ?: e::class.simpleName ?: "Unknown error"}"
+            }
             val errorResult = SyncResult(
                 success = false,
                 scope = scope,
                 itemsSynced = 0,
-                message = "Sync failed: ${e.message ?: "Unknown error"}",
+                message = errorMsg,
                 timestamp = System.currentTimeMillis()
             )
             _lastSyncResult.value = errorResult
             return errorResult
         } finally {
+            _syncProgress.value = null
             _isSyncing.value = false
         }
     }

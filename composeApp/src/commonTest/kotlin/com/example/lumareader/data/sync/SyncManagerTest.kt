@@ -5,6 +5,7 @@ import com.example.lumareader.data.model.Book
 import com.example.lumareader.data.model.ReadingPreferences
 import com.example.lumareader.data.model.SyncPreferences
 import com.example.lumareader.data.model.SyncScope
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -245,5 +246,112 @@ class SyncManagerTest {
         // Verify that epub_book_101.epub exists in the remote storage folder
         val remoteEpubPath = "$tempDirPath/google_drive_sync/epub_book_101.epub".toPath()
         assertTrue(fs.exists(remoteEpubPath))
+    }
+
+    @Test
+    fun testLocalFileDriveClient_onProgressInvokedDuringUpload() = runBlocking {
+        val fs = FileSystem.SYSTEM
+        val tempDir = Files.createTempDirectory("drive_prog_test").toFile().apply { deleteOnExit() }
+        val tempDirPath = tempDir.absolutePath
+        val client = LocalFileDriveClient(tempDirPath, fs, "test@example.com")
+
+        val dummyData = ByteArray(40000) { (it % 128).toByte() }
+        val localFile = java.io.File(tempDir, "chunk_test.epub").apply {
+            writeBytes(dummyData)
+        }
+
+        val progressReports = mutableListOf<Pair<Long, Long>>()
+        val ok = client.uploadBinaryFile("remote_chunk.epub", localFile.absolutePath) { sent, total ->
+            progressReports.add(sent to total)
+        }
+
+        assertTrue(ok)
+        assertTrue(progressReports.isNotEmpty())
+        val lastReport = progressReports.last()
+        assertEquals(40000L, lastReport.first)
+        assertEquals(40000L, lastReport.second)
+    }
+
+    @Test
+    fun testCloudSyncManager_syncProgressEmittedDuringEpubSyncAndReset() = runBlocking {
+        val fs = FileSystem.SYSTEM
+        val tempDir = Files.createTempDirectory("sync_prog_full").toFile().apply { deleteOnExit() }
+        val tempDirPath = tempDir.absolutePath
+        val repo = LocalBookRepository(tempDirPath, "$tempDirPath/cache")
+
+        val syncClient = LocalFileDriveClient(tempDirPath, fs, "epub.prog@example.com")
+        lateinit var syncManager: CloudSyncManager
+        var capturedDuringUpload: SyncProgress? = null
+
+        val testClient = object : RemoteDriveClient by syncClient {
+            override suspend fun uploadBinaryFile(
+                remoteFileName: String,
+                localFilePath: String,
+                mimeType: String,
+                onProgress: ((bytesTransferred: Long, totalBytes: Long) -> Unit)?
+            ): Boolean {
+                return syncClient.uploadBinaryFile(remoteFileName, localFilePath, mimeType) { sent, total ->
+                    onProgress?.invoke(sent, total)
+                    capturedDuringUpload = syncManager.syncProgress.value
+                }
+            }
+        }
+
+        syncManager = CloudSyncManager(fs = fs, remoteClient = testClient)
+        syncManager.connect("epub.prog@example.com")
+
+        val booksDir = java.io.File(tempDirPath, "books").apply { mkdirs() }
+        val dummyEpub = java.io.File(booksDir, "book_progress.epub").apply {
+            writeBytes(ByteArray(32768) { 42.toByte() })
+        }
+
+        val testBook = Book(
+            id = "book_prog_1",
+            title = "Progress Tracking Book",
+            author = "Author",
+            unzippedDir = "$tempDirPath/cache/extracted_prog",
+            spine = listOf("ch1.html"),
+            toc = emptyList(),
+            epubFilePath = dummyEpub.absolutePath
+        )
+        repo.updateBooks(listOf(testBook))
+
+        val result = syncManager.triggerSync(tempDirPath, repo, SyncScope.FULL_LIBRARY)
+
+        assertTrue(result.success)
+        assertNull(syncManager.syncProgress.value, "Progress must reset to null after sync finishes")
+        assertNotNull(capturedDuringUpload, "Progress should have been emitted during upload")
+        assertEquals("Progress Tracking Book", capturedDuringUpload?.currentItemName)
+        assertEquals(1, capturedDuringUpload?.totalItems)
+        assertTrue(capturedDuringUpload?.isUpload == true)
+        assertTrue((capturedDuringUpload?.itemBytesTransferred ?: 0L) > 0L)
+    }
+
+    @Test
+    fun testCloudSyncManager_readingPositionSyncNeverEmitsSyncProgress() = runBlocking {
+        val fs = FileSystem.SYSTEM
+        val tempDir = Files.createTempDirectory("sync_pos_silent").toFile().apply { deleteOnExit() }
+        val tempDirPath = tempDir.absolutePath
+        val repo = LocalBookRepository(tempDirPath, "$tempDirPath/cache")
+
+        val syncClient = LocalFileDriveClient(tempDirPath, fs, "silent@example.com")
+        lateinit var syncManager: CloudSyncManager
+        var capturedDuringUploadText: SyncProgress? = null
+
+        val testClient = object : RemoteDriveClient by syncClient {
+            override suspend fun uploadTextFile(fileName: String, content: String): Boolean {
+                capturedDuringUploadText = syncManager.syncProgress.value
+                return syncClient.uploadTextFile(fileName, content)
+            }
+        }
+
+        syncManager = CloudSyncManager(fs = fs, remoteClient = testClient)
+        syncManager.connect("silent@example.com")
+
+        val result = syncManager.triggerSync(tempDirPath, repo, SyncScope.READING_POSITION_ONLY)
+
+        assertTrue(result.success)
+        assertNull(syncManager.syncProgress.value)
+        assertNull(capturedDuringUploadText, "Reading position sync must never set syncProgress (stays completely silent)")
     }
 }

@@ -29,8 +29,8 @@ class AndroidGoogleDriveClient(
         private const val OAUTH_SCOPE = "oauth2:$SCOPE_APPDATA $SCOPE_FILE"
         private const val DRIVE_API_BASE = "https://www.googleapis.com/drive/v3"
         private const val DRIVE_UPLOAD_BASE = "https://www.googleapis.com/upload/drive/v3"
-        private const val CONNECT_TIMEOUT_MS = 15000
-        private const val READ_TIMEOUT_MS = 20000
+        private const val CONNECT_TIMEOUT_MS = 30000
+        private const val READ_TIMEOUT_MS = 120000
     }
 
     override suspend fun isAvailable(): Boolean {
@@ -43,48 +43,62 @@ class AndroidGoogleDriveClient(
 
     override suspend fun listFiles(): List<RemoteFileInfo> = withContext(Dispatchers.IO) {
         var token = getAuthToken() ?: return@withContext emptyList()
-        val url = "$DRIVE_API_BASE/files?spaces=appDataFolder&fields=files(id,name,size)&pageSize=1000"
-        var conn = openConnection(url, "GET", token)
-        var responseCode = conn.responseCode
+        val allFiles = mutableListOf<RemoteFileInfo>()
+        var pageToken: String? = null
 
-        if (responseCode == HttpURLConnection.HTTP_UNAUTHORIZED) {
-            invalidateToken(token)
-            token = getAuthToken() ?: return@withContext emptyList()
-            conn.disconnect()
-            conn = openConnection(url, "GET", token)
-            responseCode = conn.responseCode
-        }
+        do {
+            val pageParam = if (pageToken != null) "&pageToken=${URLEncoder.encode(pageToken, "UTF-8")}" else ""
+            val url = "$DRIVE_API_BASE/files?spaces=appDataFolder&fields=files(id,name,size),nextPageToken&pageSize=1000$pageParam"
+            var conn = openConnection(url, "GET", token)
+            var responseCode = conn.responseCode
 
-        if (responseCode in 200..299) {
-            try {
-                val jsonStr = conn.inputStream.bufferedReader(StandardCharsets.UTF_8).use { it.readText() }
-                val root = JSONObject(jsonStr)
-                val filesArr = root.optJSONArray("files") ?: return@withContext emptyList()
-                val list = ArrayList<RemoteFileInfo>(filesArr.length())
-                for (i in 0 until filesArr.length()) {
-                    val item = filesArr.getJSONObject(i)
-                    list.add(
-                        RemoteFileInfo(
-                            id = item.optString("id"),
-                            name = item.optString("name"),
-                            sizeBytes = item.optLong("size", 0L)
-                        )
-                    )
-                }
-                list
-            } catch (e: Exception) {
-                e.printStackTrace()
-                emptyList()
-            } finally {
+            if (responseCode == HttpURLConnection.HTTP_UNAUTHORIZED) {
+                invalidateToken(token)
+                token = getAuthToken() ?: return@withContext allFiles
                 conn.disconnect()
+                conn = openConnection(url, "GET", token)
+                responseCode = conn.responseCode
             }
-        } else {
-            conn.disconnect()
-            emptyList()
-        }
+
+            if (responseCode in 200..299) {
+                try {
+                    val jsonStr = conn.inputStream.bufferedReader(StandardCharsets.UTF_8).use { it.readText() }
+                    val root = JSONObject(jsonStr)
+                    val filesArr = root.optJSONArray("files")
+                    if (filesArr != null) {
+                        for (i in 0 until filesArr.length()) {
+                            val item = filesArr.getJSONObject(i)
+                            allFiles.add(
+                                RemoteFileInfo(
+                                    id = item.optString("id"),
+                                    name = item.optString("name"),
+                                    sizeBytes = item.optLong("size", 0L)
+                                )
+                            )
+                        }
+                    }
+                    pageToken = root.optString("nextPageToken").takeIf { it.isNotBlank() }
+                } catch (e: Exception) {
+                    android.util.Log.e("LumaDriveClient", "Error parsing listFiles response", e)
+                    pageToken = null
+                } finally {
+                    conn.disconnect()
+                }
+            } else {
+                logError(conn, "GET", url, responseCode)
+                conn.disconnect()
+                pageToken = null
+            }
+        } while (pageToken != null)
+
+        allFiles
     }
 
-    override suspend fun downloadBinaryFile(remoteFileName: String, destinationFilePath: String): Boolean = withContext(Dispatchers.IO) {
+    override suspend fun downloadBinaryFile(
+        remoteFileName: String,
+        destinationFilePath: String,
+        onProgress: ((bytesTransferred: Long, totalBytes: Long) -> Unit)?
+    ): Boolean = withContext(Dispatchers.IO) {
         var token = getAuthToken() ?: return@withContext false
         var fileId = findFileId(remoteFileName, token) ?: return@withContext false
 
@@ -100,6 +114,7 @@ class AndroidGoogleDriveClient(
         }
 
         if (responseCode in 200..299) {
+            val contentLength = conn.contentLengthLong.takeIf { it > 0 } ?: 0L
             val destFile = java.io.File(destinationFilePath)
             destFile.parentFile?.mkdirs()
             val tempFile = java.io.File(destFile.parentFile, "${destFile.name}.tmp")
@@ -108,8 +123,11 @@ class AndroidGoogleDriveClient(
                     java.io.FileOutputStream(tempFile).use { output ->
                         val buffer = ByteArray(16384)
                         var bytesRead: Int
+                        var totalTransferred = 0L
                         while (input.read(buffer).also { bytesRead = it } != -1) {
                             output.write(buffer, 0, bytesRead)
+                            totalTransferred += bytesRead
+                            onProgress?.invoke(totalTransferred, contentLength)
                         }
                         output.flush()
                     }
@@ -131,28 +149,32 @@ class AndroidGoogleDriveClient(
         }
     }
 
-    override suspend fun uploadBinaryFile(remoteFileName: String, localFilePath: String, mimeType: String): Boolean = withContext(Dispatchers.IO) {
+    override suspend fun uploadBinaryFile(
+        remoteFileName: String,
+        localFilePath: String,
+        mimeType: String,
+        onProgress: ((bytesTransferred: Long, totalBytes: Long) -> Unit)?
+    ): Boolean = withContext(Dispatchers.IO) {
         val localFile = java.io.File(localFilePath)
-        if (!localFile.exists() || localFile.length() == 0L) return@withContext false
-
-        var token = getAuthToken() ?: return@withContext false
-        var fileId = findFileId(remoteFileName, token)
-
-        val success = if (fileId != null) {
-            updateExistingBinaryFile(fileId, localFile, mimeType, token)
-        } else {
-            createNewBinaryFile(remoteFileName, localFile, mimeType, token)
+        if (!localFile.exists() || localFile.length() == 0L) {
+            android.util.Log.e("LumaDriveClient", "Upload skipped: file missing or empty: $localFilePath")
+            return@withContext false
         }
 
+        var token = getAuthToken() ?: run {
+            android.util.Log.e("LumaDriveClient", "Cannot upload $remoteFileName: failed to get OAuth token")
+            return@withContext false
+        }
+        var fileId = findFileId(remoteFileName, token)
+
+        val success = performResumableUpload(fileId, remoteFileName, localFile, mimeType, token, onProgress)
+
         if (!success) {
+            android.util.Log.w("LumaDriveClient", "Resumable upload failed for $remoteFileName, refreshing token and retrying...")
             invalidateToken(token)
             val freshToken = getAuthToken() ?: return@withContext false
             fileId = findFileId(remoteFileName, freshToken)
-            if (fileId != null) {
-                updateExistingBinaryFile(fileId, localFile, mimeType, freshToken)
-            } else {
-                createNewBinaryFile(remoteFileName, localFile, mimeType, freshToken)
-            }
+            performResumableUpload(fileId, remoteFileName, localFile, mimeType, freshToken, onProgress)
         } else {
             true
         }
@@ -248,12 +270,14 @@ class AndroidGoogleDriveClient(
     }
 
     private fun findFileId(fileName: String, token: String): String? {
-        val query = "name = '$fileName' and trashed = false"
+        val safeName = fileName.replace("'", "\\'")
+        val query = "name = '$safeName' and trashed = false"
         val encodedQuery = URLEncoder.encode(query, "UTF-8")
         val url = "$DRIVE_API_BASE/files?spaces=appDataFolder&q=$encodedQuery&fields=files(id,name)"
         val conn = openConnection(url, "GET", token)
         return try {
-            if (conn.responseCode in 200..299) {
+            val code = conn.responseCode
+            if (code in 200..299) {
                 val jsonStr = conn.inputStream.bufferedReader(StandardCharsets.UTF_8).use { it.readText() }
                 val root = JSONObject(jsonStr)
                 val files = root.optJSONArray("files")
@@ -261,10 +285,11 @@ class AndroidGoogleDriveClient(
                     files.getJSONObject(0).optString("id")
                 } else null
             } else {
+                logError(conn, "GET", url, code)
                 null
             }
         } catch (e: Exception) {
-            e.printStackTrace()
+            android.util.Log.e("LumaDriveClient", "Error finding file $fileName", e)
             null
         } finally {
             conn.disconnect()
@@ -273,9 +298,15 @@ class AndroidGoogleDriveClient(
 
     private fun updateExistingFile(fileId: String, content: String, token: String): Boolean {
         val url = "$DRIVE_UPLOAD_BASE/files/$fileId?uploadType=media"
-        val conn = openConnection(url, "PATCH", token).apply {
-            doOutput = true
+        val conn = (URL(url).openConnection() as HttpURLConnection).apply {
+            requestMethod = "POST"
+            setRequestProperty("X-HTTP-Method-Override", "PATCH")
+            connectTimeout = CONNECT_TIMEOUT_MS
+            readTimeout = READ_TIMEOUT_MS
+            setRequestProperty("Authorization", "Bearer $token")
+            setRequestProperty("User-Agent", "LumaReader-Android")
             setRequestProperty("Content-Type", "application/json; charset=UTF-8")
+            doOutput = true
         }
         return try {
             val bytes = content.toByteArray(StandardCharsets.UTF_8)
@@ -284,9 +315,15 @@ class AndroidGoogleDriveClient(
                 os.write(bytes)
                 os.flush()
             }
-            conn.responseCode in 200..299
+            val code = conn.responseCode
+            if (code in 200..299) {
+                true
+            } else {
+                logError(conn, "PATCH", url, code)
+                false
+            }
         } catch (e: Exception) {
-            e.printStackTrace()
+            android.util.Log.e("LumaDriveClient", "Exception in updateExistingFile", e)
             false
         } finally {
             conn.disconnect()
@@ -327,90 +364,134 @@ class AndroidGoogleDriveClient(
                 os.write(closing)
                 os.flush()
             }
-            conn.responseCode in 200..299
+            val code = conn.responseCode
+            if (code in 200..299) {
+                true
+            } else {
+                logError(conn, "POST", url, code)
+                false
+            }
         } catch (e: Exception) {
-            e.printStackTrace()
+            android.util.Log.e("LumaDriveClient", "Exception in createNewFile", e)
             false
         } finally {
             conn.disconnect()
         }
     }
 
-    private fun updateExistingBinaryFile(fileId: String, file: java.io.File, mimeType: String, token: String): Boolean {
-        val url = "$DRIVE_UPLOAD_BASE/files/$fileId?uploadType=media"
-        val conn = openConnection(url, "PATCH", token).apply {
-            doOutput = true
-            setRequestProperty("Content-Type", mimeType)
-            setFixedLengthStreamingMode(file.length())
+    private fun performResumableUpload(
+        fileId: String?,
+        fileName: String,
+        file: java.io.File,
+        mimeType: String,
+        token: String,
+        onProgress: ((bytesTransferred: Long, totalBytes: Long) -> Unit)? = null
+    ): Boolean {
+        val fileLength = file.length()
+
+        // Step 1: Initiate Resumable Upload Session
+        val initUrl = if (fileId != null) {
+            "$DRIVE_UPLOAD_BASE/files/$fileId?uploadType=resumable"
+        } else {
+            "$DRIVE_UPLOAD_BASE/files?uploadType=resumable"
         }
+
+        val initConn = (URL(initUrl).openConnection() as HttpURLConnection).apply {
+            requestMethod = "POST"
+            if (fileId != null) {
+                setRequestProperty("X-HTTP-Method-Override", "PATCH")
+            }
+            connectTimeout = CONNECT_TIMEOUT_MS
+            readTimeout = READ_TIMEOUT_MS
+            setRequestProperty("Authorization", "Bearer $token")
+            setRequestProperty("User-Agent", "LumaReader-Android")
+            setRequestProperty("Content-Type", "application/json; charset=UTF-8")
+            setRequestProperty("X-Upload-Content-Type", mimeType)
+            setRequestProperty("X-Upload-Content-Length", fileLength.toString())
+            doOutput = true
+        }
+
+        val sessionUrl = try {
+            val metadataJson = if (fileId == null) {
+                JSONObject().apply {
+                    put("name", fileName)
+                    put("parents", org.json.JSONArray().put("appDataFolder"))
+                }.toString()
+            } else {
+                "{}"
+            }
+            val metaBytes = metadataJson.toByteArray(StandardCharsets.UTF_8)
+            initConn.setFixedLengthStreamingMode(metaBytes.size)
+            initConn.outputStream.use { os ->
+                os.write(metaBytes)
+                os.flush()
+            }
+
+            val code = initConn.responseCode
+            if (code in 200..299) {
+                initConn.getHeaderField("Location")
+            } else {
+                logError(initConn, "POST", initUrl, code)
+                null
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("LumaDriveClient", "Exception initiating resumable upload for $fileName", e)
+            null
+        } finally {
+            initConn.disconnect()
+        }
+
+        if (sessionUrl.isNullOrBlank()) {
+            android.util.Log.e("LumaDriveClient", "No session Location returned for $fileName upload")
+            return false
+        }
+
+        // Step 2: Stream binary content directly via PUT to the session Location
+        val uploadConn = (URL(sessionUrl).openConnection() as HttpURLConnection).apply {
+            requestMethod = "PUT"
+            connectTimeout = CONNECT_TIMEOUT_MS
+            readTimeout = READ_TIMEOUT_MS
+            setRequestProperty("Content-Type", mimeType)
+            setRequestProperty("User-Agent", "LumaReader-Android")
+            setFixedLengthStreamingMode(fileLength)
+            doOutput = true
+        }
+
         return try {
             java.io.FileInputStream(file).use { input ->
-                conn.outputStream.use { output ->
-                    val buffer = ByteArray(16384)
+                uploadConn.outputStream.use { output ->
+                    val buffer = ByteArray(32768)
                     var bytesRead: Int
+                    var bytesSent = 0L
                     while (input.read(buffer).also { bytesRead = it } != -1) {
                         output.write(buffer, 0, bytesRead)
+                        bytesSent += bytesRead
+                        onProgress?.invoke(bytesSent, fileLength)
                     }
                     output.flush()
                 }
             }
-            conn.responseCode in 200..299
+
+            val code = uploadConn.responseCode
+            if (code in 200..299) {
+                true
+            } else {
+                logError(uploadConn, "PUT", sessionUrl, code)
+                false
+            }
         } catch (e: Exception) {
-            e.printStackTrace()
+            android.util.Log.e("LumaDriveClient", "Exception streaming binary upload for $fileName", e)
             false
         } finally {
-            conn.disconnect()
+            uploadConn.disconnect()
         }
     }
 
-    private fun createNewBinaryFile(fileName: String, file: java.io.File, mimeType: String, token: String): Boolean {
-        val boundary = "====LumaReaderBoundary${System.currentTimeMillis()}===="
-        val url = "$DRIVE_UPLOAD_BASE/files?uploadType=multipart"
-        val conn = openConnection(url, "POST", token).apply {
-            doOutput = true
-            setRequestProperty("Content-Type", "multipart/related; boundary=$boundary")
-        }
-
-        return try {
-            val metadataJson = JSONObject().apply {
-                put("name", fileName)
-                put("parents", org.json.JSONArray().put("appDataFolder"))
-            }.toString()
-            val metadataBytes = metadataJson.toByteArray(StandardCharsets.UTF_8)
-
-            val part1Header = ("--$boundary\r\n" +
-                    "Content-Type: application/json; charset=UTF-8\r\n\r\n").toByteArray(StandardCharsets.UTF_8)
-            val part2Header = ("\r\n--$boundary\r\n" +
-                    "Content-Type: $mimeType\r\n\r\n").toByteArray(StandardCharsets.UTF_8)
-            val closing = ("\r\n--$boundary--\r\n").toByteArray(StandardCharsets.UTF_8)
-
-            val totalLength = part1Header.size.toLong() + metadataBytes.size.toLong() +
-                    part2Header.size.toLong() + file.length() + closing.size.toLong()
-            conn.setFixedLengthStreamingMode(totalLength)
-
-            conn.outputStream.use { output ->
-                output.write(part1Header)
-                output.write(metadataBytes)
-                output.write(part2Header)
-
-                java.io.FileInputStream(file).use { input ->
-                    val buffer = ByteArray(16384)
-                    var bytesRead: Int
-                    while (input.read(buffer).also { bytesRead = it } != -1) {
-                        output.write(buffer, 0, bytesRead)
-                    }
-                }
-
-                output.write(closing)
-                output.flush()
-            }
-            conn.responseCode in 200..299
-        } catch (e: Exception) {
-            e.printStackTrace()
-            false
-        } finally {
-            conn.disconnect()
-        }
+    private fun logError(conn: HttpURLConnection, method: String, url: String, code: Int) {
+        val errorBody = try {
+            conn.errorStream?.bufferedReader(StandardCharsets.UTF_8)?.use { it.readText() }
+        } catch (_: Exception) { null }
+        android.util.Log.e("LumaDriveClient", "[$method] $url failed (HTTP $code): $errorBody")
     }
 
     private fun openConnection(urlString: String, method: String, token: String): HttpURLConnection {

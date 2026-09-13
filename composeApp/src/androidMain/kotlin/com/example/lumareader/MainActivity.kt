@@ -99,7 +99,17 @@ class MainActivity : FragmentActivity() {
             val isSyncing by syncManager.isSyncing.collectAsState()
             val syncEmail by syncManager.connectedEmail.collectAsState()
             val lastSyncResult by syncManager.lastSyncResult.collectAsState()
+            val syncProgress by syncManager.syncProgress.collectAsState()
             val scope = rememberCoroutineScope()
+
+            LaunchedEffect(syncProgress) {
+                com.example.lumareader.data.sync.SyncNotificationHelper.updateProgress(this@MainActivity, syncProgress)
+            }
+            DisposableEffect(Unit) {
+                onDispose {
+                    com.example.lumareader.data.sync.SyncNotificationHelper.cancel(this@MainActivity)
+                }
+            }
 
             val gso = remember {
                 GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN)
@@ -315,6 +325,7 @@ class MainActivity : FragmentActivity() {
                         isSyncing = isSyncing,
                         syncEmail = syncEmail,
                         lastSyncResult = lastSyncResult,
+                        syncProgress = syncProgress,
                         onExportBackupToFile = {
                             exportBackupLauncher.launch("luma-reader-backup-${System.currentTimeMillis()}.json")
                         },

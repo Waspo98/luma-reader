@@ -154,6 +154,14 @@ fun MainNavigation(
                 }
                 
                 entry<Reader> { key ->
+                    DisposableEffect(key.bookId) {
+                        onDispose {
+                            if (syncEmail != null && preferences.syncPrefs.autoSyncOnClose) {
+                                onTriggerSync(com.example.lumareader.data.model.SyncScope.READING_POSITION_ONLY)
+                            }
+                        }
+                    }
+
                     val book = books.find { it.id == key.bookId }
                     if (book != null) {
                         ReaderScreen(

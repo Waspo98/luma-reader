@@ -422,6 +422,13 @@ fun LibraryScreen(
                         syncPrefs = preferences.syncPrefs.copy(autoSyncOnOpen = enabled)
                     )
                 )
+            },
+            onAutoSyncOnCloseToggled = { enabled ->
+                onPreferencesChanged(
+                    preferences.copy(
+                        syncPrefs = preferences.syncPrefs.copy(autoSyncOnClose = enabled)
+                    )
+                )
             }
         )
     }

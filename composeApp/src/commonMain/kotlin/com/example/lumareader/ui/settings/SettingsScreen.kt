@@ -497,6 +497,38 @@ fun SettingsScreen(
                                 }
                             )
                         }
+
+                        // Sync on Reader Exit Toggle Row
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
+                                Text(
+                                    text = "Sync on reader exit",
+                                    fontFamily = GoogleSans,
+                                    fontSize = 14.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                                Text(
+                                    text = "Automatically uploads reading progress when closing a book or returning to library.",
+                                    fontSize = 12.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            Switch(
+                                checked = preferences.syncPrefs.autoSyncOnClose,
+                                onCheckedChange = { checked ->
+                                    onPreferencesChanged(
+                                        preferences.copy(
+                                            syncPrefs = preferences.syncPrefs.copy(autoSyncOnClose = checked)
+                                        )
+                                    )
+                                }
+                            )
+                        }
                     } else {
                         Button(
                             onClick = onSyncClick,

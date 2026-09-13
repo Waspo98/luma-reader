@@ -23,6 +23,7 @@ class SyncManagerTest {
         assertEquals(SyncScope.FULL_LIBRARY, prefs.syncScope)
         assertNull(prefs.lastSyncTimestamp)
         assertTrue(prefs.autoSyncOnOpen)
+        assertTrue(prefs.autoSyncOnClose)
     }
 
     @Test
@@ -30,7 +31,8 @@ class SyncManagerTest {
         val original = SyncPreferences(
             syncScope = SyncScope.READING_POSITION_ONLY,
             lastSyncTimestamp = 1725890000000L,
-            autoSyncOnOpen = false
+            autoSyncOnOpen = false,
+            autoSyncOnClose = true
         )
         val encoded = json.encodeToString(original)
         val decoded = json.decodeFromString<SyncPreferences>(encoded)
@@ -38,6 +40,7 @@ class SyncManagerTest {
         assertEquals(SyncScope.READING_POSITION_ONLY, decoded.syncScope)
         assertEquals(1725890000000L, decoded.lastSyncTimestamp)
         assertFalse(decoded.autoSyncOnOpen)
+        assertTrue(decoded.autoSyncOnClose)
     }
 
     @Test

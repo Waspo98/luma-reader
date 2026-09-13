@@ -39,6 +39,7 @@ fun SyncConfigBottomSheet(
     onDisconnectClick: () -> Unit,
     onSyncNowClick: () -> Unit,
     onAutoSyncToggled: (Boolean) -> Unit = {},
+    onAutoSyncOnCloseToggled: (Boolean) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
@@ -268,6 +269,43 @@ fun SyncConfigBottomSheet(
                     Switch(
                         checked = syncPrefs.autoSyncOnOpen,
                         onCheckedChange = onAutoSyncToggled,
+                        enabled = connectedEmail != null
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            // Sync on Reader Exit Toggle Card
+            Surface(
+                shape = RoundedCornerShape(14.dp),
+                color = MaterialTheme.colorScheme.surfaceContainer,
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(
+                    modifier = Modifier.padding(14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Sync on reader exit",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            text = "Automatically uploads reading progress when closing a book",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Switch(
+                        checked = syncPrefs.autoSyncOnClose,
+                        onCheckedChange = onAutoSyncOnCloseToggled,
                         enabled = connectedEmail != null
                     )
                 }

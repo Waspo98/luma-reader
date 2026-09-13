@@ -82,6 +82,7 @@ data class SyncPreferences(
     val syncScope: SyncScope = SyncScope.FULL_LIBRARY,
     val lastSyncTimestamp: Long? = null,
     val autoSyncOnOpen: Boolean = true,
+    val autoSyncOnClose: Boolean = true,
     val connectedEmail: String? = null
 )
 

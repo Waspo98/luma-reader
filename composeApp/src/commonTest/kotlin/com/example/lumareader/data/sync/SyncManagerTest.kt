@@ -164,4 +164,86 @@ class SyncManagerTest {
         assertNotNull(downloaded)
         assertTrue(downloaded.contains("book-1"))
     }
+
+    @Test
+    fun testSyncPreferences_syncEpubFilesDefault() {
+        val prefs = SyncPreferences()
+        assertTrue(prefs.syncEpubFiles)
+
+        val updated = prefs.copy(syncEpubFiles = false)
+        assertFalse(updated.syncEpubFiles)
+
+        val encoded = json.encodeToString(updated)
+        val decoded = json.decodeFromString<SyncPreferences>(encoded)
+        assertFalse(decoded.syncEpubFiles)
+    }
+
+    @Test
+    fun testLocalFileDriveClient_binaryUploadDownloadAndList() = runBlocking {
+        val fs = FileSystem.SYSTEM
+        val tempDir = Files.createTempDirectory("drive_binary_test").toFile().apply { deleteOnExit() }
+        val tempDirPath = tempDir.absolutePath
+
+        val client = LocalFileDriveClient(tempDirPath, fs, "test@example.com")
+
+        // Create a dummy EPUB file
+        val localEpub = java.io.File(tempDir, "sample.epub").apply {
+            writeBytes("PK\u0003\u0004DummyEpubContentForTesting12345".toByteArray())
+        }
+
+        // Upload
+        val uploadOk = client.uploadBinaryFile("epub_sample.epub", localEpub.absolutePath)
+        assertTrue(uploadOk)
+
+        // List
+        val list = client.listFiles()
+        assertEquals(1, list.size)
+        assertEquals("epub_sample.epub", list[0].name)
+        assertTrue(list[0].sizeBytes > 0)
+
+        // Download to new destination
+        val downloadedFile = java.io.File(tempDir, "downloaded.epub")
+        val downloadOk = client.downloadBinaryFile("epub_sample.epub", downloadedFile.absolutePath)
+        assertTrue(downloadOk)
+        assertTrue(downloadedFile.exists())
+        assertEquals(localEpub.length(), downloadedFile.length())
+        assertEquals("PK\u0003\u0004DummyEpubContentForTesting12345", downloadedFile.readText())
+    }
+
+    @Test
+    fun testCloudSyncManager_fullLibrarySyncWithEpubUpload() = runBlocking {
+        val fs = FileSystem.SYSTEM
+        val tempDir = Files.createTempDirectory("sync_epub_full").toFile().apply { deleteOnExit() }
+        val tempDirPath = tempDir.absolutePath
+        val repo = LocalBookRepository(tempDirPath, "$tempDirPath/cache")
+
+        val syncClient = LocalFileDriveClient(tempDirPath, fs, "epub.user@example.com")
+        val syncManager = CloudSyncManager(fs = fs, remoteClient = syncClient)
+        syncManager.connect("epub.user@example.com")
+
+        // Create a local book with an EPUB file on disk
+        val booksDir = java.io.File(tempDirPath, "books").apply { mkdirs() }
+        val dummyEpub = java.io.File(booksDir, "book_101.epub").apply {
+            writeBytes("DUMMY_EPUB_BINARY_CONTENT_101".toByteArray())
+        }
+
+        val testBook = Book(
+            id = "book_101",
+            title = "Test EPUB Book",
+            author = "Test Author",
+            unzippedDir = "$tempDirPath/cache/extracted_101",
+            spine = listOf("ch1.html"),
+            toc = emptyList(),
+            epubFilePath = dummyEpub.absolutePath
+        )
+        repo.updateBooks(listOf(testBook))
+
+        val result = syncManager.triggerSync(tempDirPath, repo, SyncScope.FULL_LIBRARY)
+        assertTrue(result.success)
+        assertTrue(result.message.contains("EPUB(s) uploaded") || result.message.contains("Full library"))
+
+        // Verify that epub_book_101.epub exists in the remote storage folder
+        val remoteEpubPath = "$tempDirPath/google_drive_sync/epub_book_101.epub".toPath()
+        assertTrue(fs.exists(remoteEpubPath))
+    }
 }

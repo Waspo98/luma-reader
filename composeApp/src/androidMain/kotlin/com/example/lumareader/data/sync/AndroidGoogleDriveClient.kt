@@ -41,6 +41,123 @@ class AndroidGoogleDriveClient(
         return account.name
     }
 
+    override suspend fun listFiles(): List<RemoteFileInfo> = withContext(Dispatchers.IO) {
+        var token = getAuthToken() ?: return@withContext emptyList()
+        val url = "$DRIVE_API_BASE/files?spaces=appDataFolder&fields=files(id,name,size)&pageSize=1000"
+        var conn = openConnection(url, "GET", token)
+        var responseCode = conn.responseCode
+
+        if (responseCode == HttpURLConnection.HTTP_UNAUTHORIZED) {
+            invalidateToken(token)
+            token = getAuthToken() ?: return@withContext emptyList()
+            conn.disconnect()
+            conn = openConnection(url, "GET", token)
+            responseCode = conn.responseCode
+        }
+
+        if (responseCode in 200..299) {
+            try {
+                val jsonStr = conn.inputStream.bufferedReader(StandardCharsets.UTF_8).use { it.readText() }
+                val root = JSONObject(jsonStr)
+                val filesArr = root.optJSONArray("files") ?: return@withContext emptyList()
+                val list = ArrayList<RemoteFileInfo>(filesArr.length())
+                for (i in 0 until filesArr.length()) {
+                    val item = filesArr.getJSONObject(i)
+                    list.add(
+                        RemoteFileInfo(
+                            id = item.optString("id"),
+                            name = item.optString("name"),
+                            sizeBytes = item.optLong("size", 0L)
+                        )
+                    )
+                }
+                list
+            } catch (e: Exception) {
+                e.printStackTrace()
+                emptyList()
+            } finally {
+                conn.disconnect()
+            }
+        } else {
+            conn.disconnect()
+            emptyList()
+        }
+    }
+
+    override suspend fun downloadBinaryFile(remoteFileName: String, destinationFilePath: String): Boolean = withContext(Dispatchers.IO) {
+        var token = getAuthToken() ?: return@withContext false
+        var fileId = findFileId(remoteFileName, token) ?: return@withContext false
+
+        var conn = openConnection("$DRIVE_API_BASE/files/$fileId?alt=media", "GET", token)
+        var responseCode = conn.responseCode
+
+        if (responseCode == HttpURLConnection.HTTP_UNAUTHORIZED) {
+            invalidateToken(token)
+            token = getAuthToken() ?: return@withContext false
+            conn.disconnect()
+            conn = openConnection("$DRIVE_API_BASE/files/$fileId?alt=media", "GET", token)
+            responseCode = conn.responseCode
+        }
+
+        if (responseCode in 200..299) {
+            val destFile = java.io.File(destinationFilePath)
+            destFile.parentFile?.mkdirs()
+            val tempFile = java.io.File(destFile.parentFile, "${destFile.name}.tmp")
+            try {
+                conn.inputStream.use { input ->
+                    java.io.FileOutputStream(tempFile).use { output ->
+                        val buffer = ByteArray(16384)
+                        var bytesRead: Int
+                        while (input.read(buffer).also { bytesRead = it } != -1) {
+                            output.write(buffer, 0, bytesRead)
+                        }
+                        output.flush()
+                    }
+                }
+                if (destFile.exists()) {
+                    destFile.delete()
+                }
+                tempFile.renameTo(destFile)
+            } catch (e: Exception) {
+                e.printStackTrace()
+                if (tempFile.exists()) tempFile.delete()
+                false
+            } finally {
+                conn.disconnect()
+            }
+        } else {
+            conn.disconnect()
+            false
+        }
+    }
+
+    override suspend fun uploadBinaryFile(remoteFileName: String, localFilePath: String, mimeType: String): Boolean = withContext(Dispatchers.IO) {
+        val localFile = java.io.File(localFilePath)
+        if (!localFile.exists() || localFile.length() == 0L) return@withContext false
+
+        var token = getAuthToken() ?: return@withContext false
+        var fileId = findFileId(remoteFileName, token)
+
+        val success = if (fileId != null) {
+            updateExistingBinaryFile(fileId, localFile, mimeType, token)
+        } else {
+            createNewBinaryFile(remoteFileName, localFile, mimeType, token)
+        }
+
+        if (!success) {
+            invalidateToken(token)
+            val freshToken = getAuthToken() ?: return@withContext false
+            fileId = findFileId(remoteFileName, freshToken)
+            if (fileId != null) {
+                updateExistingBinaryFile(fileId, localFile, mimeType, freshToken)
+            } else {
+                createNewBinaryFile(remoteFileName, localFile, mimeType, freshToken)
+            }
+        } else {
+            true
+        }
+    }
+
     override suspend fun downloadTextFile(fileName: String): String? = withContext(Dispatchers.IO) {
         var token = getAuthToken() ?: return@withContext null
         var fileId = findFileId(fileName, token) ?: return@withContext null
@@ -209,6 +326,83 @@ class AndroidGoogleDriveClient(
                 os.write(contentBytes)
                 os.write(closing)
                 os.flush()
+            }
+            conn.responseCode in 200..299
+        } catch (e: Exception) {
+            e.printStackTrace()
+            false
+        } finally {
+            conn.disconnect()
+        }
+    }
+
+    private fun updateExistingBinaryFile(fileId: String, file: java.io.File, mimeType: String, token: String): Boolean {
+        val url = "$DRIVE_UPLOAD_BASE/files/$fileId?uploadType=media"
+        val conn = openConnection(url, "PATCH", token).apply {
+            doOutput = true
+            setRequestProperty("Content-Type", mimeType)
+            setFixedLengthStreamingMode(file.length())
+        }
+        return try {
+            java.io.FileInputStream(file).use { input ->
+                conn.outputStream.use { output ->
+                    val buffer = ByteArray(16384)
+                    var bytesRead: Int
+                    while (input.read(buffer).also { bytesRead = it } != -1) {
+                        output.write(buffer, 0, bytesRead)
+                    }
+                    output.flush()
+                }
+            }
+            conn.responseCode in 200..299
+        } catch (e: Exception) {
+            e.printStackTrace()
+            false
+        } finally {
+            conn.disconnect()
+        }
+    }
+
+    private fun createNewBinaryFile(fileName: String, file: java.io.File, mimeType: String, token: String): Boolean {
+        val boundary = "====LumaReaderBoundary${System.currentTimeMillis()}===="
+        val url = "$DRIVE_UPLOAD_BASE/files?uploadType=multipart"
+        val conn = openConnection(url, "POST", token).apply {
+            doOutput = true
+            setRequestProperty("Content-Type", "multipart/related; boundary=$boundary")
+        }
+
+        return try {
+            val metadataJson = JSONObject().apply {
+                put("name", fileName)
+                put("parents", org.json.JSONArray().put("appDataFolder"))
+            }.toString()
+            val metadataBytes = metadataJson.toByteArray(StandardCharsets.UTF_8)
+
+            val part1Header = ("--$boundary\r\n" +
+                    "Content-Type: application/json; charset=UTF-8\r\n\r\n").toByteArray(StandardCharsets.UTF_8)
+            val part2Header = ("\r\n--$boundary\r\n" +
+                    "Content-Type: $mimeType\r\n\r\n").toByteArray(StandardCharsets.UTF_8)
+            val closing = ("\r\n--$boundary--\r\n").toByteArray(StandardCharsets.UTF_8)
+
+            val totalLength = part1Header.size.toLong() + metadataBytes.size.toLong() +
+                    part2Header.size.toLong() + file.length() + closing.size.toLong()
+            conn.setFixedLengthStreamingMode(totalLength)
+
+            conn.outputStream.use { output ->
+                output.write(part1Header)
+                output.write(metadataBytes)
+                output.write(part2Header)
+
+                java.io.FileInputStream(file).use { input ->
+                    val buffer = ByteArray(16384)
+                    var bytesRead: Int
+                    while (input.read(buffer).also { bytesRead = it } != -1) {
+                        output.write(buffer, 0, bytesRead)
+                    }
+                }
+
+                output.write(closing)
+                output.flush()
             }
             conn.responseCode in 200..299
         } catch (e: Exception) {

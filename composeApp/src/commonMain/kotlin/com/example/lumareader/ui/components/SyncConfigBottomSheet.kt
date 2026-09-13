@@ -33,6 +33,8 @@ fun SyncConfigBottomSheet(
     isSyncing: Boolean,
     connectedEmail: String?,
     lastSyncResult: SyncResult?,
+    totalEpubSizeBytes: Long = 0L,
+    bookCount: Int = 0,
     onDismiss: () -> Unit,
     onScopeSelected: (SyncScope) -> Unit,
     onConnectClick: () -> Unit,
@@ -40,6 +42,7 @@ fun SyncConfigBottomSheet(
     onSyncNowClick: () -> Unit,
     onAutoSyncToggled: (Boolean) -> Unit = {},
     onAutoSyncOnCloseToggled: (Boolean) -> Unit = {},
+    onSyncEpubFilesToggled: (Boolean) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
@@ -236,6 +239,99 @@ fun SyncConfigBottomSheet(
                 isSelected = syncPrefs.syncScope == SyncScope.READING_POSITION_ONLY,
                 onClick = { onScopeSelected(SyncScope.READING_POSITION_ONLY) }
             )
+
+            AnimatedVisibility(
+                visible = syncPrefs.syncScope == SyncScope.FULL_LIBRARY,
+                enter = fadeIn() + expandVertically(),
+                exit = fadeOut() + shrinkVertically()
+            ) {
+                Column {
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Surface(
+                        shape = RoundedCornerShape(14.dp),
+                        color = MaterialTheme.colorScheme.surfaceContainer,
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(modifier = Modifier.padding(14.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.CloudUpload,
+                                            contentDescription = null,
+                                            tint = MaterialTheme.colorScheme.primary,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                        Text(
+                                            text = "Sync EPUB book files",
+                                            style = MaterialTheme.typography.titleSmall,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = MaterialTheme.colorScheme.onSurface
+                                        )
+                                    }
+                                    Spacer(modifier = Modifier.height(2.dp))
+                                    Text(
+                                        text = if (syncPrefs.syncEpubFiles)
+                                            "Uploads and downloads full EPUB files across devices"
+                                        else
+                                            "Syncs catalog metadata & progress only; book files stay local",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                                Spacer(modifier = Modifier.width(12.dp))
+                                Switch(
+                                    checked = syncPrefs.syncEpubFiles,
+                                    onCheckedChange = onSyncEpubFilesToggled,
+                                    enabled = connectedEmail != null
+                                )
+                            }
+
+                            if (syncPrefs.syncEpubFiles && bookCount > 0) {
+                                Spacer(modifier = Modifier.height(10.dp))
+                                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Storage,
+                                            contentDescription = null,
+                                            tint = MaterialTheme.colorScheme.primary,
+                                            modifier = Modifier.size(14.dp)
+                                        )
+                                        Text(
+                                            text = "Drive storage required:",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                    Text(
+                                        text = "~${formatBytes(totalEpubSizeBytes)} ($bookCount books)",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
 
             Spacer(modifier = Modifier.height(14.dp))
 
@@ -458,5 +554,22 @@ private fun formatRelativeTimestamp(timestamp: Long): String {
         diffSeconds < 3600 -> "${diffSeconds / 60}m ago"
         diffSeconds < 86400 -> "${diffSeconds / 3600}h ago"
         else -> "${diffSeconds / 86400}d ago"
+    }
+}
+
+private fun formatBytes(bytes: Long): String {
+    if (bytes <= 0L) return "0 B"
+    val units = arrayOf("B", "KB", "MB", "GB")
+    var digitGroups = 0
+    var b = bytes.toDouble()
+    while (b >= 1024.0 && digitGroups < units.size - 1) {
+        b /= 1024.0
+        digitGroups++
+    }
+    return if (digitGroups == 0) {
+        "${b.toLong()} ${units[digitGroups]}"
+    } else {
+        val rounded = ((b * 10).toLong()) / 10.0
+        "$rounded ${units[digitGroups]}"
     }
 }

@@ -149,7 +149,8 @@ fun MainNavigation(
                         onRenameShelf = { oldName, newName -> repository.renameUserShelf(oldName, newName) },
                         onAssignBookToShelf = { bookId, shelf -> repository.assignBookToShelf(bookId, shelf) },
                         onRemoveBookFromShelf = { bookId, shelf -> repository.removeBookFromShelf(bookId, shelf) },
-                        onAssignBooksToShelf = { ids, shelf -> repository.assignBooksToShelf(ids, shelf) }
+                        onAssignBooksToShelf = { ids, shelf -> repository.assignBooksToShelf(ids, shelf) },
+                        totalEpubSizeBytes = remember(books) { repository.getEpubStorageSizeBytes() }
                     )
                 }
                 

@@ -529,6 +529,41 @@ fun SettingsScreen(
                                 }
                             )
                         }
+
+                        // Sync EPUB Files Toggle Row
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
+                                Text(
+                                    text = "Sync full EPUB files",
+                                    fontFamily = GoogleSans,
+                                    fontSize = 14.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                                Text(
+                                    text = if (preferences.syncPrefs.syncEpubFiles)
+                                        "Uploads and downloads full EPUB files across devices • ~${formatBytes(storageFootprint.booksSizeBytes)} (${storageFootprint.bookCount} books)"
+                                    else
+                                        "Syncs reading progress & catalog metadata only. Book files stay local to this device.",
+                                    fontSize = 12.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            Switch(
+                                checked = preferences.syncPrefs.syncEpubFiles,
+                                onCheckedChange = { checked ->
+                                    onPreferencesChanged(
+                                        preferences.copy(
+                                            syncPrefs = preferences.syncPrefs.copy(syncEpubFiles = checked)
+                                        )
+                                    )
+                                }
+                            )
+                        }
                     } else {
                         Button(
                             onClick = onSyncClick,

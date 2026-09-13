@@ -171,6 +171,7 @@ class CloudSyncManager(
                     val catalogContent = client.downloadTextFile("library_catalog.json")
                     val localBooks = repository.books.value
                     val localPrefs = repository.preferences.value
+                    val syncEpubs = localPrefs.syncPrefs.syncEpubFiles
 
                     val remoteCatalog = if (!catalogContent.isNullOrBlank()) {
                         try {
@@ -202,6 +203,68 @@ class CloudSyncManager(
                             )
                         }
                     }
+
+                    var epubsUploaded = 0
+                    var epubsDownloaded = 0
+
+                    if (syncEpubs) {
+                        val remoteFiles = try {
+                            client.listFiles()
+                        } catch (_: Exception) {
+                            emptyList()
+                        }
+                        val remoteFileMap = remoteFiles.associateBy { it.name }
+
+                        // 1. Upload local EPUBs that are missing on remote
+                        for (lb in localBooks) {
+                            val epubPath = lb.epubFilePath
+                            if (!epubPath.isNullOrBlank() && fs.exists(epubPath.toPath())) {
+                                val remoteName = "epub_${lb.id}.epub"
+                                if (!remoteFileMap.containsKey(remoteName)) {
+                                    val ok = client.uploadBinaryFile(remoteName, epubPath)
+                                    if (ok) epubsUploaded++
+                                }
+                            }
+                        }
+
+                        // 2. Download remote EPUBs that are missing locally
+                        val booksDir = repository.getBooksDir()
+                        try {
+                            fs.createDirectories(booksDir.toPath())
+                        } catch (_: Exception) {}
+
+                        for (rb in remoteBooks) {
+                            val localMatch = localBooks.firstOrNull { it.id == rb.id }
+                            val localEpubMissing = localMatch?.epubFilePath == null || !fs.exists(localMatch.epubFilePath.toPath())
+                            if (localEpubMissing) {
+                                val remoteName = "epub_${rb.id}.epub"
+                                if (remoteFileMap.containsKey(remoteName)) {
+                                    val safeTitle = rb.title.replace(Regex("[^a-zA-Z0-9_.-]"), "_").take(40)
+                                    val targetFile = "$booksDir/${safeTitle}_${rb.id}.epub"
+                                    val ok = client.downloadBinaryFile(remoteName, targetFile)
+                                    if (ok && fs.exists(targetFile.toPath())) {
+                                        try {
+                                            val imported = repository.importBook(targetFile)
+                                            val updatedImported = imported.copy(
+                                                currentSpineIndex = rb.currentSpineIndex,
+                                                currentProgression = rb.currentProgression,
+                                                lastLocatorJson = rb.lastLocatorJson,
+                                                lastReadTimestamp = rb.lastReadTimestamp,
+                                                collections = (imported.collections + rb.collections).distinct(),
+                                                annotations = (imported.annotations + rb.annotations).distinctBy { it.id }
+                                            )
+                                            repository.updateBook(updatedImported)
+                                            mergedBooksMap[rb.id] = updatedImported
+                                            epubsDownloaded++
+                                        } catch (e: Exception) {
+                                            e.printStackTrace()
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     val finalBooks = mergedBooksMap.values.toList()
                     if (finalBooks != localBooks) {
                         repository.updateBooks(finalBooks)
@@ -240,11 +303,22 @@ class CloudSyncManager(
                     }
                     client.uploadTextFile("reading_positions.json", json.encodeToString(positionsMap))
 
+                    val epubSummary = if (syncEpubs) {
+                        when {
+                            epubsUploaded > 0 && epubsDownloaded > 0 -> ", $epubsUploaded EPUB(s) uploaded, $epubsDownloaded downloaded"
+                            epubsUploaded > 0 -> ", $epubsUploaded EPUB(s) uploaded"
+                            epubsDownloaded > 0 -> ", $epubsDownloaded EPUB(s) downloaded"
+                            else -> ", EPUB files up to date"
+                        }
+                    } else {
+                        ", metadata only"
+                    }
+
                     result = SyncResult(
                         success = true,
                         scope = scope,
                         itemsSynced = finalBooks.size,
-                        message = "Full library & reading positions synchronized (${finalBooks.size} books, ${mergedShelves.size} shelves)",
+                        message = "Full library synchronized (${finalBooks.size} books$epubSummary)",
                         timestamp = now
                     )
                 }

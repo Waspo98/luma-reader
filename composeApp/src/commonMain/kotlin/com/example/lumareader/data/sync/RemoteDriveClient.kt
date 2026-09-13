@@ -1,7 +1,19 @@
 package com.example.lumareader.data.sync
 
+import kotlinx.serialization.Serializable
 import okio.FileSystem
 import okio.Path.Companion.toPath
+import okio.buffer
+
+/**
+ * Metadata descriptor for a file in cloud storage.
+ */
+@Serializable
+data class RemoteFileInfo(
+    val id: String,
+    val name: String,
+    val sizeBytes: Long = 0L
+)
 
 /**
  * Platform-independent abstraction for remote cloud storage (such as Google Drive appDataFolder).
@@ -18,6 +30,11 @@ interface RemoteDriveClient {
     suspend fun getConnectedEmail(): String?
 
     /**
+     * Lists all files currently stored in the remote app data space.
+     */
+    suspend fun listFiles(): List<RemoteFileInfo>
+
+    /**
      * Downloads the text content of a file by name from the app-data space in cloud storage.
      * Returns null if the file does not exist.
      */
@@ -28,6 +45,16 @@ interface RemoteDriveClient {
      * Returns true if the upload was successful.
      */
     suspend fun uploadTextFile(fileName: String, content: String): Boolean
+
+    /**
+     * Uploads a binary file (such as an EPUB) from [localFilePath] into the cloud app data space as [remoteFileName].
+     */
+    suspend fun uploadBinaryFile(remoteFileName: String, localFilePath: String, mimeType: String = "application/epub+zip"): Boolean
+
+    /**
+     * Downloads a binary file named [remoteFileName] from cloud app data space to [destinationFilePath].
+     */
+    suspend fun downloadBinaryFile(remoteFileName: String, destinationFilePath: String): Boolean
 
     /**
      * Deletes a file by name from the app-data space, if it exists.
@@ -59,6 +86,24 @@ class LocalFileDriveClient(
         email = newEmail
     }
 
+    override suspend fun listFiles(): List<RemoteFileInfo> {
+        if (!fs.exists(folderPath)) return emptyList()
+        return try {
+            fs.list(folderPath).mapNotNull { path ->
+                val meta = fs.metadataOrNull(path)
+                if (meta?.isRegularFile == true) {
+                    RemoteFileInfo(
+                        id = path.name,
+                        name = path.name,
+                        sizeBytes = meta.size ?: 0L
+                    )
+                } else null
+            }
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
+
     override suspend fun downloadTextFile(fileName: String): String? {
         val target = "$folderPath/$fileName".toPath()
         return if (fs.exists(target)) {
@@ -76,6 +121,40 @@ class LocalFileDriveClient(
             val target = "$folderPath/$fileName".toPath()
             fs.write(target) {
                 writeUtf8(content)
+            }
+            true
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    override suspend fun uploadBinaryFile(remoteFileName: String, localFilePath: String, mimeType: String): Boolean {
+        val src = localFilePath.toPath()
+        if (!fs.exists(src)) return false
+        val dest = "$folderPath/$remoteFileName".toPath()
+        return try {
+            fs.createDirectories(folderPath)
+            fs.source(src).use { inSource ->
+                fs.sink(dest).buffer().use { outSink ->
+                    outSink.writeAll(inSource)
+                }
+            }
+            true
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    override suspend fun downloadBinaryFile(remoteFileName: String, destinationFilePath: String): Boolean {
+        val src = "$folderPath/$remoteFileName".toPath()
+        if (!fs.exists(src)) return false
+        val dest = destinationFilePath.toPath()
+        return try {
+            dest.parent?.let { fs.createDirectories(it) }
+            fs.source(src).use { inSource ->
+                fs.sink(dest).buffer().use { outSink ->
+                    outSink.writeAll(inSource)
+                }
             }
             true
         } catch (_: Exception) {

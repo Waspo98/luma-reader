@@ -101,6 +101,7 @@ fun LibraryScreen(
     onAssignBookToShelf: (String, String) -> Unit = { _, _ -> },
     onRemoveBookFromShelf: (String, String) -> Unit = { _, _ -> },
     onAssignBooksToShelf: (Set<String>, String) -> Unit = { _, _ -> },
+    totalEpubSizeBytes: Long = 0L,
     modifier: Modifier = Modifier
 ) {
     var searchQuery by remember { mutableStateOf("") }
@@ -405,6 +406,8 @@ fun LibraryScreen(
             isSyncing = isSyncing,
             connectedEmail = syncEmail,
             lastSyncResult = lastSyncResult,
+            totalEpubSizeBytes = totalEpubSizeBytes,
+            bookCount = books.size,
             onDismiss = { showSyncBottomSheet = false },
             onScopeSelected = { scope ->
                 onPreferencesChanged(
@@ -427,6 +430,13 @@ fun LibraryScreen(
                 onPreferencesChanged(
                     preferences.copy(
                         syncPrefs = preferences.syncPrefs.copy(autoSyncOnClose = enabled)
+                    )
+                )
+            },
+            onSyncEpubFilesToggled = { enabled ->
+                onPreferencesChanged(
+                    preferences.copy(
+                        syncPrefs = preferences.syncPrefs.copy(syncEpubFiles = enabled)
                     )
                 )
             }

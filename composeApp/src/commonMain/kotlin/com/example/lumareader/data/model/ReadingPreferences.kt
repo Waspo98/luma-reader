@@ -83,7 +83,8 @@ data class SyncPreferences(
     val lastSyncTimestamp: Long? = null,
     val autoSyncOnOpen: Boolean = true,
     val autoSyncOnClose: Boolean = true,
-    val connectedEmail: String? = null
+    val connectedEmail: String? = null,
+    val syncEpubFiles: Boolean = true
 )
 
 @Serializable

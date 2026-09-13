@@ -536,6 +536,25 @@ class LocalBookRepository(
         }
     }
 
+    fun getBooksDir(): String = "$filesDir/books"
+
+    fun getEpubStorageSizeBytes(): Long {
+        var total = 0L
+        val visitedPaths = mutableSetOf<String>()
+        _books.value.forEach { book ->
+            val path = book.epubFilePath
+            if (!path.isNullOrBlank() && visitedPaths.add(path)) {
+                try {
+                    val p = path.toPath()
+                    if (fs.exists(p)) {
+                        total += fs.metadataOrNull(p)?.size ?: 0L
+                    }
+                } catch (_: Exception) {}
+            }
+        }
+        return total
+    }
+
     fun getStorageFootprint(): StorageFootprint {
         var booksSize = 0L
         val booksDir = "$filesDir/books".toPath()
@@ -548,6 +567,9 @@ class LocalBookRepository(
                     }
                 }
             } catch (_: Exception) {}
+        }
+        if (booksSize == 0L) {
+            booksSize = getEpubStorageSizeBytes()
         }
 
         var cacheSize = 0L

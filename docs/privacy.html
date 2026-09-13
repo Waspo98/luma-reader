@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Privacy Policy - Luma Reader</title>
+    <style>
+        :root {
+            --bg-color: #0f172a;
+            --card-bg: #1e293b;
+            --text-primary: #f8fafc;
+            --text-secondary: #94a3b8;
+            --accent: #38bdf8;
+            --border: #334155;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-primary);
+            line-height: 1.6;
+            margin: 0;
+            padding: 40px 20px;
+        }
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            background: var(--card-bg);
+            padding: 40px;
+            border-radius: 16px;
+            border: 1px solid var(--border);
+            box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.3);
+        }
+        h1, h2, h3 {
+            color: #fff;
+            margin-top: 24px;
+        }
+        h1 {
+            font-size: 28px;
+            border-bottom: 2px solid var(--border);
+            padding-bottom: 12px;
+            margin-top: 0;
+        }
+        h2 {
+            font-size: 20px;
+            color: var(--accent);
+        }
+        p, li {
+            color: var(--text-secondary);
+            font-size: 15px;
+        }
+        ul {
+            padding-left: 20px;
+        }
+        a {
+            color: var(--accent);
+            text-decoration: none;
+        }
+        a:hover {
+            text-decoration: underline;
+        }
+        .highlight-box {
+            background: rgba(56, 189, 248, 0.1);
+            border-left: 4px solid var(--accent);
+            padding: 16px;
+            margin: 20px 0;
+            border-radius: 0 8px 8px 0;
+        }
+        .footer {
+            margin-top: 40px;
+            text-align: center;
+            font-size: 13px;
+            color: var(--text-secondary);
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Privacy Policy for Luma Reader</h1>
+        <p><strong>Last Updated:</strong> September 13, 2026</p>
+
+        <p>Luma Reader ("we", "our", or "the app") respects your privacy. This Privacy Policy explains how Luma Reader handles your data when you use our application and its Google Drive synchronization features.</p>
+
+        <h2>1. Zero Data Collection on Our Servers</h2>
+        <p>Luma Reader is a client-side e-book reader. <strong>We do not operate any external tracking servers, analytics services, or user databases.</strong> Your personal reading habits, bookmarks, annotations, library catalogs, and book files are stored locally on your device or in your personal cloud storage.</p>
+
+        <h2>2. Google Drive Integration & Scopes</h2>
+        <p>If you choose to enable Google Drive synchronization, the app connects directly between your device and Google's servers via official Google Play Services APIs. Luma Reader requests the following OAuth scopes:</p>
+        <ul>
+            <li><strong><code>https://www.googleapis.com/auth/drive.appdata</code></strong>: Allows the app to read, create, and modify application configuration and sync data within a private, hidden Application Data folder in your Google Drive.</li>
+            <li><strong><code>https://www.googleapis.com/auth/drive.file</code></strong>: Allows the app to manage files specifically created by or opened with Luma Reader.</li>
+        </ul>
+
+        <h2>3. What Data Is Synchronized</h2>
+        <p>When Google Drive sync is active, Luma Reader only synchronizes:</p>
+        <ul>
+            <li>Reading positions (current chapter index and percentage progress).</li>
+            <li>Timestamps of when books were last read.</li>
+            <li>User-created shelves, collections, and book annotations.</li>
+            <li>Library metadata catalog (titles, authors, series metadata).</li>
+        </ul>
+        <p>This data is stored exclusively in your personal Google Drive account's private app sandbox. No third party (including the developers of Luma Reader) can view, access, or transfer your sync data.</p>
+
+        <div class="highlight-box">
+            <h3>Google API Services User Data Policy Compliance</h3>
+            <p>Luma Reader's use and transfer to any other app of information received from Google APIs will adhere to the <a href="https://developers.google.com/terms/api-services-user-data-policy" target="_blank" rel="noopener">Google API Services User Data Policy</a>, including the Limited Use requirements.</p>
+        </div>
+
+        <h2>4. Data Retention and Deletion</h2>
+        <p>You have complete control over your data at all times:</p>
+        <ul>
+            <li><strong>Disconnecting:</strong> You can tap <em>Disconnect Sync</em> in the app settings at any time to sever the connection to Google Drive and remove all cached credentials from the device.</li>
+            <li><strong>Revoking Access:</strong> You can revoke Luma Reader's permissions at any time through your <a href="https://myaccount.google.com/permissions" target="_blank" rel="noopener">Google Account Security Permissions</a> page.</li>
+            <li><strong>Deleting Cloud Data:</strong> You can delete synced data from your Google Drive by managing your Hidden App Data under Google Drive Settings on the web.</li>
+        </ul>
+
+        <h2>5. Changes to This Policy</h2>
+        <p>We may update this Privacy Policy from time to time. Any updates will be posted on this page with a revised "Last Updated" date.</p>
+
+        <h2>6. Contact</h2>
+        <p>If you have any questions about this Privacy Policy or Luma Reader, please contact us via our public repository or developer support email.</p>
+
+        <div class="footer">
+            &copy; 2026 Luma Reader. All rights reserved.
+        </div>
+    </div>
+</body>
+</html>

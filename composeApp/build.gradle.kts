@@ -21,6 +21,7 @@ android {
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
+        isCoreLibraryDesugaringEnabled = true
     }
     buildFeatures {
         compose = true
@@ -68,6 +69,20 @@ kotlin {
             implementation(libs.androidx.core.ktx)
             implementation(libs.androidx.lifecycle.runtime.ktx)
             implementation(libs.androidx.activity.compose)
+            implementation(libs.androidx.fragment.ktx)
+            implementation(libs.readium.shared)
+            implementation(libs.readium.streamer)
+            implementation(libs.readium.navigator)
+            implementation(libs.play.services.auth)
+        }
+
+        commonTest.dependencies {
+            implementation(kotlin("test"))
+            implementation(libs.kotlinx.coroutines.test)
         }
     }
+}
+
+dependencies {
+    coreLibraryDesugaring(libs.desugar.jdk.libs)
 }

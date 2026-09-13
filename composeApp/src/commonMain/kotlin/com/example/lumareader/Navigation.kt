@@ -7,14 +7,23 @@ import androidx.navigation3.runtime.rememberNavBackStack
 import androidx.navigation3.ui.NavDisplay
 import com.example.lumareader.data.LocalBookRepository
 import com.example.lumareader.ui.library.LibraryScreen
-import com.example.lumareader.ui.library.FilteredLibraryScreen
 import com.example.lumareader.ui.reader.ReaderScreen
 import com.example.lumareader.ui.settings.SettingsScreen
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Button
+import androidx.compose.material3.Text
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
 
 import androidx.compose.ui.graphics.Color
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.animation.*
 import androidx.compose.animation.core.*
+
+import com.example.lumareader.theme.toComposeColor
 
 @Composable
 fun MainNavigation(
@@ -22,7 +31,13 @@ fun MainNavigation(
     onImportBookClick: () -> Unit,
     isSyncing: Boolean = false,
     syncEmail: String? = null,
-    onSyncClick: () -> Unit = {}
+    lastSyncResult: com.example.lumareader.data.sync.SyncResult? = null,
+    onConnectSync: () -> Unit = {},
+    onDisconnectSync: () -> Unit = {},
+    onTriggerSync: (com.example.lumareader.data.model.SyncScope) -> Unit = {},
+    onSyncClick: () -> Unit = {},
+    onExportBackupToFile: () -> Unit = {},
+    onRestoreBackupFromFile: () -> Unit = {}
 ) {
     val backStack = rememberNavBackStack(Main)
     
@@ -30,13 +45,7 @@ fun MainNavigation(
     val preferences by repository.preferences.collectAsState()
 
     val accentColor = remember(preferences.accentColorHex) {
-        try {
-            val hex = preferences.accentColorHex.removePrefix("#")
-            val parsed = hex.toLong(16)
-            if (hex.length == 6) Color(0xFF000000 or parsed) else Color(parsed)
-        } catch (_: Exception) {
-            Color(0xFFD45D42) // Fallback to default terracotta
-        }
+        preferences.accentColorHex.toComposeColor()
     }
 
     MaterialTheme(
@@ -51,20 +60,17 @@ fun MainNavigation(
             onBack = { backStack.removeLastOrNull() },
             transitionSpec = {
                 if (targetState.key is Reader) {
-                    (slideInVertically(
-                        initialOffsetY = { it / 3 },
-                        animationSpec = spring(dampingRatio = Spring.DampingRatioLowBouncy, stiffness = Spring.StiffnessLow)
+                    (scaleIn(
+                        initialScale = 0.72f,
+                        animationSpec = spring(dampingRatio = Spring.DampingRatioLowBouncy, stiffness = Spring.StiffnessMediumLow)
                     ) + fadeIn(
-                        animationSpec = spring(stiffness = Spring.StiffnessLow)
-                    ) + scaleIn(
-                        initialScale = 0.9f,
-                        animationSpec = spring(dampingRatio = Spring.DampingRatioLowBouncy, stiffness = Spring.StiffnessLow)
+                        animationSpec = spring(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = Spring.StiffnessMediumLow)
                     )).togetherWith(
-                        fadeOut(
-                            animationSpec = spring(stiffness = Spring.StiffnessLow)
-                        ) + scaleOut(
-                            targetScale = 0.96f,
-                            animationSpec = spring(stiffness = Spring.StiffnessLow)
+                        scaleOut(
+                            targetScale = 0.90f,
+                            animationSpec = spring(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = Spring.StiffnessMediumLow)
+                        ) + fadeOut(
+                            animationSpec = spring(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = Spring.StiffnessMediumLow)
                         )
                     )
                 } else {
@@ -85,20 +91,17 @@ fun MainNavigation(
             },
             popTransitionSpec = {
                 if (initialState.key is Reader) {
-                    (fadeIn(
-                        animationSpec = spring(stiffness = Spring.StiffnessLow)
-                    ) + scaleIn(
-                        initialScale = 0.96f,
-                        animationSpec = spring(dampingRatio = Spring.DampingRatioLowBouncy, stiffness = Spring.StiffnessLow)
+                    (scaleIn(
+                        initialScale = 0.90f,
+                        animationSpec = spring(dampingRatio = Spring.DampingRatioLowBouncy, stiffness = Spring.StiffnessMediumLow)
+                    ) + fadeIn(
+                        animationSpec = spring(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = Spring.StiffnessMediumLow)
                     )).togetherWith(
-                        slideOutVertically(
-                            targetOffsetY = { it / 3 },
-                            animationSpec = spring(dampingRatio = Spring.DampingRatioLowBouncy, stiffness = Spring.StiffnessLow)
+                        scaleOut(
+                            targetScale = 0.72f,
+                            animationSpec = spring(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = Spring.StiffnessMediumLow)
                         ) + fadeOut(
-                            animationSpec = spring(stiffness = Spring.StiffnessLow)
-                        ) + scaleOut(
-                            targetScale = 0.9f,
-                            animationSpec = spring(stiffness = Spring.StiffnessLow)
+                            animationSpec = spring(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = Spring.StiffnessMediumLow)
                         )
                     )
                 } else {
@@ -126,13 +129,27 @@ fun MainNavigation(
                         onImportBookClick = onImportBookClick,
                         onSettingsClick = { backStack.add(Settings) },
                         onSyncClick = onSyncClick,
+                        isSyncing = isSyncing,
+                        syncEmail = syncEmail,
+                        lastSyncResult = lastSyncResult,
+                        onConnectSync = onConnectSync,
+                        onDisconnectSync = onDisconnectSync,
+                        onTriggerSync = onTriggerSync,
                         onPreferencesChanged = { repository.savePreferences(it) },
                         onDeleteBook = { repository.deleteBook(it) },
+                        onDeleteBooks = { repository.deleteBooks(it) },
+                        onUpdateBook = { repository.updateBook(it) },
                         onUpdateMetadata = { bookId, title, author, series, seriesNum, cover ->
                             repository.updateBookMetadata(bookId, title, author, series, seriesNum, cover)
                         },
-                        onAuthorClick = { author -> backStack.add(FilteredLibrary("author", author)) },
-                        onSeriesClick = { series -> backStack.add(FilteredLibrary("series", series)) }
+                        onToggleBookStatus = { repository.toggleBookReadingStatus(it) },
+                        onUpdateBooksStatus = { ids, status -> repository.updateBooksReadingStatus(ids, status) },
+                        onCreateShelf = { repository.createUserShelf(it) },
+                        onDeleteShelf = { repository.deleteUserShelf(it) },
+                        onRenameShelf = { oldName, newName -> repository.renameUserShelf(oldName, newName) },
+                        onAssignBookToShelf = { bookId, shelf -> repository.assignBookToShelf(bookId, shelf) },
+                        onRemoveBookFromShelf = { bookId, shelf -> repository.removeBookFromShelf(bookId, shelf) },
+                        onAssignBooksToShelf = { ids, shelf -> repository.assignBooksToShelf(ids, shelf) }
                     )
                 }
                 
@@ -144,36 +161,75 @@ fun MainNavigation(
                             preferences = preferences,
                             onBackClick = { backStack.removeLastOrNull() },
                             onPreferencesChanged = { repository.savePreferences(it) },
-                            onProgressUpdated = { spineIndex, progress ->
-                                repository.updateBookProgress(book.id, spineIndex, progress)
-                            }
+                            onProgressUpdated = { spineIndex, progress, locatorJson ->
+                                if (locatorJson != null) {
+                                    repository.updateBookLocator(book.id, locatorJson, spineIndex, progress)
+                                } else {
+                                    repository.updateBookProgress(book.id, spineIndex, progress)
+                                }
+                            },
+                            onAddAnnotation = { repository.addAnnotation(it) },
+                            onDeleteAnnotation = { repository.removeAnnotation(book.id, it) },
+                            onUpdateAnnotation = { repository.updateAnnotation(it) }
                         )
+                    } else {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .background(MaterialTheme.colorScheme.background),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Column(
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.spacedBy(16.dp),
+                                modifier = Modifier.padding(24.dp)
+                            ) {
+                                Text(
+                                    text = "Book not found",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    color = MaterialTheme.colorScheme.onBackground
+                                )
+                                Button(
+                                    onClick = { backStack.removeLastOrNull() },
+                                    shape = RoundedCornerShape(12.dp)
+                                ) {
+                                    Text("Return to Library")
+                                }
+                            }
+                        }
                     }
                 }
                 
                 entry<Settings> {
+                    var footprint by remember { mutableStateOf(repository.getStorageFootprint()) }
                     SettingsScreen(
                         preferences = preferences,
                         onPreferencesChanged = { repository.savePreferences(it) },
                         onBackClick = { backStack.removeLastOrNull() },
                         onSyncClick = onSyncClick,
                         isSyncing = isSyncing,
-                        syncEmail = syncEmail
-                    )
-                }
-                
-                entry<FilteredLibrary> { key ->
-                    FilteredLibraryScreen(
-                        filterType = key.filterType,
-                        filterValue = key.filterValue,
-                        books = books,
-                        preferences = preferences,
-                        onBackClick = { backStack.removeLastOrNull() },
-                        onBookClick = { bookId -> backStack.add(Reader(bookId)) },
-                        onPreferencesChanged = { repository.savePreferences(it) },
-                        onDeleteBook = { repository.deleteBook(it) },
-                        onUpdateMetadata = { bookId, title, author, series, seriesNum, cover ->
-                            repository.updateBookMetadata(bookId, title, author, series, seriesNum, cover)
+                        syncEmail = syncEmail,
+                        onDisconnectSync = onDisconnectSync,
+                        storageFootprint = footprint,
+                        onExportBackupToFile = onExportBackupToFile,
+                        onRestoreBackupFromFile = onRestoreBackupFromFile,
+                        onExportBackup = { repository.exportBackupJson() },
+                        onImportBackup = { json ->
+                            val success = repository.importBackupJson(json)
+                            if (success) {
+                                footprint = repository.getStorageFootprint()
+                            }
+                            success
+                        },
+                        onClearCoverCache = {
+                            val freed = repository.clearCoverCache()
+                            footprint = repository.getStorageFootprint()
+                            freed
+                        },
+                        onReindexLibrary = {
+                            val count = repository.reindexLibrary()
+                            footprint = repository.getStorageFootprint()
+                            count
                         }
                     )
                 }

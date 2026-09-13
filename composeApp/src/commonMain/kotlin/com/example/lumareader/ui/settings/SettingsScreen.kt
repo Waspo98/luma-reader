@@ -5,6 +5,7 @@ import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.*
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -16,15 +17,18 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.lumareader.data.model.LibraryViewMode
 import com.example.lumareader.data.model.LumaThemeMode
 import com.example.lumareader.data.model.ReadingPreferences
-import com.example.lumareader.data.model.MarginLockMode
+import com.example.lumareader.data.model.StorageFootprint
 import com.example.lumareader.theme.GoogleSans
-import com.example.lumareader.ui.utils.LumaSlider
-import androidx.compose.ui.platform.LocalHapticFeedback
-import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import com.example.lumareader.ui.components.*
+import com.example.lumareader.ui.reader.components.ReaderFormatBottomSheet
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -35,9 +39,32 @@ fun SettingsScreen(
     onSyncClick: () -> Unit,
     isSyncing: Boolean,
     syncEmail: String?,
+    onDisconnectSync: () -> Unit = {},
+    storageFootprint: StorageFootprint = StorageFootprint(),
+    onExportBackupToFile: () -> Unit = {},
+    onRestoreBackupFromFile: () -> Unit = {},
+    onExportBackup: () -> String = { "" },
+    onImportBackup: (String) -> Boolean = { false },
+    onClearCoverCache: () -> Long = { 0L },
+    onReindexLibrary: () -> Int = { 0 },
     modifier: Modifier = Modifier
 ) {
+    var showReaderFormatBottomSheet by remember { mutableStateOf(false) }
+    var showExportDialog by remember { mutableStateOf(false) }
+    var showImportDialog by remember { mutableStateOf(false) }
+    var showClearCacheDialog by remember { mutableStateOf(false) }
+    var showReindexDialog by remember { mutableStateOf(false) }
+
+    var backupJsonToExport by remember { mutableStateOf("") }
+    var importJsonInput by remember { mutableStateOf("") }
+    var importError by remember { mutableStateOf<String?>(null) }
+
+    val snackbarHostState = remember { SnackbarHostState() }
+    val coroutineScope = rememberCoroutineScope()
+    val clipboardManager = LocalClipboardManager.current
+
     Scaffold(
+        snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             TopAppBar(
                 title = {
@@ -51,7 +78,7 @@ fun SettingsScreen(
                 navigationIcon = {
                     IconButton(onClick = onBackClick) {
                         Icon(
-                            imageVector = Icons.Default.ArrowBack,
+                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
                             contentDescription = "Back"
                         )
                     }
@@ -72,119 +99,158 @@ fun SettingsScreen(
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(20.dp)
         ) {
-            // Theme Mode Section
-            SettingsSection(title = "Appearance") {
+            // 1. App Appearance
+            LumaSectionCard(title = "App Appearance") {
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text(
+                            text = "Theme Palette",
+                            fontFamily = GoogleSans,
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Text(
+                            text = "Controls the theme palette across the entire app and reading canvas.",
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        ThemePaletteSelector(
+                            currentTheme = preferences.themeMode,
+                            dayTheme = preferences.dayThemeMode,
+                            nightTheme = preferences.nightThemeMode,
+                            onThemeSelected = { onPreferencesChanged(preferences.copy(themeMode = it)) },
+                            onDayThemeSelected = { onPreferencesChanged(preferences.copy(dayThemeMode = it)) },
+                            onNightThemeSelected = { onPreferencesChanged(preferences.copy(nightThemeMode = it)) }
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(4.dp))
                     Text(
-                        text = "Theme Palette",
+                        text = "Accent Color",
                         fontFamily = GoogleSans,
                         fontSize = 14.sp,
                         fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        ThemeOptionCard(
-                            title = "System",
-                            isSelected = preferences.themeMode == LumaThemeMode.SYSTEM,
-                            onClick = { onPreferencesChanged(preferences.copy(themeMode = LumaThemeMode.SYSTEM)) },
-                            colors = listOf(Color(0xFFFAF7F0), Color(0xFF1C2025)),
-                            modifier = Modifier.weight(1f)
-                        )
-                        ThemeOptionCard(
-                            title = "Cream Light",
-                            isSelected = preferences.themeMode == LumaThemeMode.LIGHT,
-                            onClick = { onPreferencesChanged(preferences.copy(themeMode = LumaThemeMode.LIGHT)) },
-                            colors = listOf(Color(0xFFFAF7F0), Color(0xFFFAF7F0)),
-                            modifier = Modifier.weight(1f)
-                        )
-                        ThemeOptionCard(
-                            title = "Slate Gray",
-                            isSelected = preferences.themeMode == LumaThemeMode.SLATE_GRAY,
-                            onClick = { onPreferencesChanged(preferences.copy(themeMode = LumaThemeMode.SLATE_GRAY)) },
-                            colors = listOf(Color(0xFF1C2025), Color(0xFF1C2025)),
-                            modifier = Modifier.weight(1f)
-                        )
-                        ThemeOptionCard(
-                            title = "AMOLED",
-                            isSelected = preferences.themeMode == LumaThemeMode.AMOLED_BLACK,
-                            onClick = { onPreferencesChanged(preferences.copy(themeMode = LumaThemeMode.AMOLED_BLACK)) },
-                            colors = listOf(Color(0xFF000000), Color(0xFF000000)),
-                            modifier = Modifier.weight(1f)
-                        )
-                    }
-                    
+                    AccentColorPicker(
+                        selectedColorHex = preferences.accentColorHex,
+                        onColorSelected = { onPreferencesChanged(preferences.copy(accentColorHex = it)) }
+                    )
+
                     HorizontalDivider(
-                        modifier = Modifier.padding(vertical = 8.dp),
+                        modifier = Modifier.padding(vertical = 4.dp),
                         color = MaterialTheme.colorScheme.outlineVariant
                     )
-                    
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = "Extend behind notch",
-                                fontFamily = GoogleSans,
-                                fontSize = 14.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.onSurface
-                            )
-                            Text(
-                                text = "Allow reading content to utilize the entire immersive display area under the camera cutout.",
-                                fontSize = 12.sp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                        Switch(
-                            checked = preferences.extendBehindNotch,
-                            onCheckedChange = { onPreferencesChanged(preferences.copy(extendBehindNotch = it)) }
-                        )
-                    }
-                    
+
+                    SettingsToggleRow(
+                        title = "Haptic Feedback",
+                        description = "Vibrate lightly on gestures, page flips, and toolbar actions.",
+                        checked = preferences.hapticsEnabled,
+                        onCheckedChange = { onPreferencesChanged(preferences.copy(hapticsEnabled = it)) }
+                    )
+
                     HorizontalDivider(
-                        modifier = Modifier.padding(vertical = 8.dp),
+                        modifier = Modifier.padding(vertical = 4.dp),
                         color = MaterialTheme.colorScheme.outlineVariant
                     )
-                    
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
+
+                    // Prominent Reader Appearance & Formatting Card
+                    Card(
+                        onClick = { showReaderFormatBottomSheet = true },
+                        shape = RoundedCornerShape(12.dp),
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f)
+                        ),
+                        modifier = Modifier.fillMaxWidth()
                     ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = "Drop Caps",
-                                fontFamily = GoogleSans,
-                                fontSize = 14.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.onSurface
-                            )
-                            Text(
-                                text = "Display an elegant drop letter at the start of each chapter.",
-                                fontSize = 12.sp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                        Row(
+                            modifier = Modifier
+                                .padding(16.dp)
+                                .fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(16.dp)
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(40.dp)
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.AutoMirrored.Filled.MenuBook,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.primary
+                                )
+                            }
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "Reader Appearance & Layout",
+                                    fontFamily = GoogleSans,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 15.sp,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                                Spacer(modifier = Modifier.height(2.dp))
+                                Text(
+                                    text = "Fine-tune book typography, margins, columns, and line spacing",
+                                    fontSize = 12.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            Icon(
+                                imageVector = Icons.Default.ChevronRight,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
-                        Switch(
-                            checked = preferences.dropCapEnabled,
-                            onCheckedChange = { onPreferencesChanged(preferences.copy(dropCapEnabled = it)) }
-                        )
                     }
                 }
             }
 
-            // Typography Section
-            SettingsSection(title = "Typography & Layout") {
-                Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                    // Font Family Selector
-                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            // 2. Reading Behavior
+            LumaSectionCard(title = "Reading Behavior") {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    SettingsToggleRow(
+                        title = "Keep screen awake",
+                        description = "Prevent the screen from turning off while reading a book.",
+                        checked = preferences.keepScreenOn,
+                        onCheckedChange = { onPreferencesChanged(preferences.copy(keepScreenOn = it)) }
+                    )
+
+                    HorizontalDivider(
+                        modifier = Modifier.padding(vertical = 4.dp),
+                        color = MaterialTheme.colorScheme.outlineVariant
+                    )
+
+                    SettingsToggleRow(
+                        title = "Immersive fullscreen",
+                        description = "Hide system status and navigation bars during reading sessions.",
+                        checked = preferences.immersiveMode,
+                        onCheckedChange = { onPreferencesChanged(preferences.copy(immersiveMode = it)) }
+                    )
+
+                    HorizontalDivider(
+                        modifier = Modifier.padding(vertical = 4.dp),
+                        color = MaterialTheme.colorScheme.outlineVariant
+                    )
+
+                    SettingsToggleRow(
+                        title = "Extend behind notch",
+                        description = "Allow reading content to utilize the entire immersive display area under the camera cutout.",
+                        checked = preferences.extendBehindNotch,
+                        onCheckedChange = { onPreferencesChanged(preferences.copy(extendBehindNotch = it)) }
+                    )
+                }
+            }
+
+            // 3. Library Management
+            LumaSectionCard(title = "Library Management") {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         Text(
-                            text = "Font Family",
+                            text = "Default View Mode",
                             fontFamily = GoogleSans,
                             fontSize = 14.sp,
                             fontWeight = FontWeight.Bold,
@@ -194,288 +260,132 @@ fun SettingsScreen(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            listOf("Literata", "Inter", "serif").forEach { fontName ->
-                                val isSelected = preferences.fontFamily == fontName
-                                val displayLabel = if (fontName == "serif") "System Serif" else fontName
-                                FilterChip(
-                                    selected = isSelected,
-                                    onClick = { onPreferencesChanged(preferences.copy(fontFamily = fontName)) },
-                                    label = {
-                                        Text(
-                                            text = displayLabel,
-                                            fontFamily = when (fontName) {
-                                                "Literata" -> FontFamily.Serif
-                                                "Inter" -> FontFamily.SansSerif
-                                                "serif" -> FontFamily.Serif
-                                                else -> FontFamily.Default
-                                            }
+                            LumaSegmentedOption(
+                                selected = preferences.libraryPrefs.viewMode == LibraryViewMode.GRID,
+                                onClick = {
+                                    onPreferencesChanged(
+                                        preferences.copy(
+                                            libraryPrefs = preferences.libraryPrefs.copy(viewMode = LibraryViewMode.GRID)
                                         )
-                                    },
-                                    modifier = Modifier.weight(1f),
-                                    colors = FilterChipDefaults.filterChipColors(
-                                        selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
-                                        selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
                                     )
-                                )
-                            }
-                        }
-                    }
-
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-
-                    // Font Size Slider
-                    LumaSlider(
-                        label = "Font Size",
-                        value = preferences.fontSizeSp,
-                        onValueChangeFinished = { newVal ->
-                            onPreferencesChanged(preferences.copy(fontSizeSp = newVal))
-                        },
-                        valueRange = 10f..30f,
-                        steps = 19,
-                        accentColor = MaterialTheme.colorScheme.primary,
-                        valueFormatter = { "${it.toInt()} sp" }
-                    )
-
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-
-                    // Line Spacing Slider
-                    LumaSlider(
-                        label = "Line Spacing",
-                        value = preferences.lineSpacing,
-                        onValueChangeFinished = { newVal ->
-                            onPreferencesChanged(preferences.copy(lineSpacing = newVal))
-                        },
-                        valueRange = 1.0f..2.0f,
-                        steps = 9,
-                        accentColor = MaterialTheme.colorScheme.primary,
-                        valueFormatter = { "${(it * 10).toInt() / 10.0}x" }
-                    )
-
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-
-                    // Margins Lock Mode & Granular Margins Sliders
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 4.dp)
-                    ) {
-                        Text(
-                            text = "Margin Lock Mode",
-                            fontFamily = GoogleSans,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 14.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            listOf(
-                                MarginLockMode.LOCK_ALL to "Lock All",
-                                MarginLockMode.LOCK_VH to "Lock H/V",
-                                MarginLockMode.UNLOCKED to "Unlocked"
-                            ).forEach { (mode, label) ->
-                                val isSelected = preferences.marginLockMode == mode
-                                val accentColor = MaterialTheme.colorScheme.primary
-                                Box(
-                                    modifier = Modifier
-                                        .weight(1f)
-                                        .height(36.dp)
-                                        .clip(RoundedCornerShape(8.dp))
-                                        .background(if (isSelected) accentColor.copy(alpha = 0.15f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f))
-                                        .border(
-                                            width = if (isSelected) 1.5.dp else 1.dp,
-                                            color = if (isSelected) accentColor else MaterialTheme.colorScheme.outline.copy(alpha = 0.3f),
-                                            shape = RoundedCornerShape(8.dp)
-                                        )
-                                        .clickable {
-                                            val newPrefs = when (mode) {
-                                                MarginLockMode.LOCK_ALL -> {
-                                                    val newVal = preferences.marginTopDp
-                                                    preferences.copy(
-                                                        marginLockMode = MarginLockMode.LOCK_ALL,
-                                                        marginTopDp = newVal,
-                                                        marginBottomDp = newVal,
-                                                        marginLeftDp = newVal,
-                                                        marginRightDp = newVal,
-                                                        marginDp = newVal
-                                                    )
-                                                }
-                                                MarginLockMode.LOCK_VH -> {
-                                                    preferences.copy(
-                                                        marginLockMode = MarginLockMode.LOCK_VH,
-                                                        marginTopDp = preferences.marginTopDp,
-                                                        marginBottomDp = preferences.marginTopDp,
-                                                        marginLeftDp = preferences.marginLeftDp,
-                                                        marginRightDp = preferences.marginLeftDp
-                                                    )
-                                                }
-                                                MarginLockMode.UNLOCKED -> {
-                                                    preferences.copy(marginLockMode = MarginLockMode.UNLOCKED)
-                                                }
-                                            }
-                                            onPreferencesChanged(newPrefs)
-                                        },
-                                    contentAlignment = Alignment.Center
+                                },
+                                accentColor = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
                                 ) {
+                                    Icon(
+                                        imageVector = Icons.Default.GridView,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(16.dp),
+                                        tint = if (preferences.libraryPrefs.viewMode == LibraryViewMode.GRID) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
+                                    )
                                     Text(
-                                        text = label,
+                                        text = "Grid",
                                         fontFamily = GoogleSans,
-                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
-                                        fontSize = 12.sp,
-                                        color = if (isSelected) accentColor else MaterialTheme.colorScheme.onSurface
+                                        fontWeight = if (preferences.libraryPrefs.viewMode == LibraryViewMode.GRID) FontWeight.Bold else FontWeight.Normal,
+                                        fontSize = 13.sp,
+                                        color = if (preferences.libraryPrefs.viewMode == LibraryViewMode.GRID) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
+                                    )
+                                }
+                            }
+
+                            LumaSegmentedOption(
+                                selected = preferences.libraryPrefs.viewMode == LibraryViewMode.LIST,
+                                onClick = {
+                                    onPreferencesChanged(
+                                        preferences.copy(
+                                            libraryPrefs = preferences.libraryPrefs.copy(viewMode = LibraryViewMode.LIST)
+                                        )
+                                    )
+                                },
+                                accentColor = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.AutoMirrored.Filled.ViewList,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(16.dp),
+                                        tint = if (preferences.libraryPrefs.viewMode == LibraryViewMode.LIST) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
+                                    )
+                                    Text(
+                                        text = "List",
+                                        fontFamily = GoogleSans,
+                                        fontWeight = if (preferences.libraryPrefs.viewMode == LibraryViewMode.LIST) FontWeight.Bold else FontWeight.Normal,
+                                        fontSize = 13.sp,
+                                        color = if (preferences.libraryPrefs.viewMode == LibraryViewMode.LIST) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
                                     )
                                 }
                             }
                         }
-                        
-                        Spacer(modifier = Modifier.height(16.dp))
-                        
-                        val accentColor = MaterialTheme.colorScheme.primary
-                        when (preferences.marginLockMode) {
-                            MarginLockMode.LOCK_ALL -> {
-                                LumaSlider(
-                                    label = "All Margins",
-                                    value = preferences.marginTopDp.toFloat(),
-                                    onValueChangeFinished = { newVal ->
-                                        val newValInt = newVal.toInt()
-                                        onPreferencesChanged(
-                                            preferences.copy(
-                                                marginTopDp = newValInt,
-                                                marginBottomDp = newValInt,
-                                                marginLeftDp = newValInt,
-                                                marginRightDp = newValInt,
-                                                marginDp = newValInt
-                                            )
-                                        )
-                                    },
-                                    valueRange = 8f..48f,
-                                    steps = 19,
-                                    accentColor = accentColor,
-                                    valueFormatter = { "${it.toInt()} dp" }
-                                )
-                            }
-                            MarginLockMode.LOCK_VH -> {
-                                LumaSlider(
-                                    label = "Vertical Margins (Top/Bottom)",
-                                    value = preferences.marginTopDp.toFloat(),
-                                    onValueChangeFinished = { newVal ->
-                                        onPreferencesChanged(
-                                            preferences.copy(
-                                                marginTopDp = newVal.toInt(),
-                                                marginBottomDp = newVal.toInt()
-                                            )
-                                        )
-                                    },
-                                    valueRange = 8f..48f,
-                                    steps = 19,
-                                    accentColor = accentColor,
-                                    valueFormatter = { "${it.toInt()} dp" }
-                                )
-                                Spacer(modifier = Modifier.height(12.dp))
-                                LumaSlider(
-                                    label = "Horizontal Margins (Left/Right)",
-                                    value = preferences.marginLeftDp.toFloat(),
-                                    onValueChangeFinished = { newVal ->
-                                        onPreferencesChanged(
-                                            preferences.copy(
-                                                marginLeftDp = newVal.toInt(),
-                                                marginRightDp = newVal.toInt()
-                                            )
-                                        )
-                                    },
-                                    valueRange = 8f..48f,
-                                    steps = 19,
-                                    accentColor = accentColor,
-                                    valueFormatter = { "${it.toInt()} dp" }
-                                )
-                            }
-                            MarginLockMode.UNLOCKED -> {
-                                LumaSlider(
-                                    label = "Top Margin",
-                                    value = preferences.marginTopDp.toFloat(),
-                                    onValueChangeFinished = { newVal ->
-                                        onPreferencesChanged(preferences.copy(marginTopDp = newVal.toInt()))
-                                    },
-                                    valueRange = 8f..48f,
-                                    steps = 19,
-                                    accentColor = accentColor,
-                                    valueFormatter = { "${it.toInt()} dp" }
-                                )
-                                Spacer(modifier = Modifier.height(8.dp))
-                                LumaSlider(
-                                    label = "Bottom Margin",
-                                    value = preferences.marginBottomDp.toFloat(),
-                                    onValueChangeFinished = { newVal ->
-                                        onPreferencesChanged(preferences.copy(marginBottomDp = newVal.toInt()))
-                                    },
-                                    valueRange = 8f..48f,
-                                    steps = 19,
-                                    accentColor = accentColor,
-                                    valueFormatter = { "${it.toInt()} dp" }
-                                )
-                                Spacer(modifier = Modifier.height(8.dp))
-                                LumaSlider(
-                                    label = "Left Margin",
-                                    value = preferences.marginLeftDp.toFloat(),
-                                    onValueChangeFinished = { newVal ->
-                                        onPreferencesChanged(preferences.copy(marginLeftDp = newVal.toInt()))
-                                    },
-                                    valueRange = 8f..48f,
-                                    steps = 19,
-                                    accentColor = accentColor,
-                                    valueFormatter = { "${it.toInt()} dp" }
-                                )
-                                Spacer(modifier = Modifier.height(8.dp))
-                                LumaSlider(
-                                    label = "Right Margin",
-                                    value = preferences.marginRightDp.toFloat(),
-                                    onValueChangeFinished = { newVal ->
-                                        onPreferencesChanged(preferences.copy(marginRightDp = newVal.toInt()))
-                                    },
-                                    valueRange = 8f..48f,
-                                    steps = 19,
-                                    accentColor = accentColor,
-                                    valueFormatter = { "${it.toInt()} dp" }
-                                )
-                            }
-                        }
                     }
-                    
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
 
-                    // Foldable Columns Settings
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = "Force Single Column",
-                                fontFamily = GoogleSans,
-                                fontSize = 14.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.onSurface
-                            )
-                            Text(
-                                text = "Lock to one column even when device is unfolded or in landscape.",
-                                fontSize = 12.sp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                    HorizontalDivider(
+                        modifier = Modifier.padding(vertical = 4.dp),
+                        color = MaterialTheme.colorScheme.outlineVariant
+                    )
+
+                    SettingsToggleRow(
+                        title = "Reading progress badges",
+                        description = "Display completion percentage badges on book covers.",
+                        checked = preferences.libraryPrefs.showProgressBadges,
+                        onCheckedChange = {
+                            onPreferencesChanged(
+                                preferences.copy(
+                                    libraryPrefs = preferences.libraryPrefs.copy(showProgressBadges = it)
+                                )
                             )
                         }
-                        Switch(
-                            checked = preferences.twoColumnLocked,
-                            onCheckedChange = { onPreferencesChanged(preferences.copy(twoColumnLocked = it)) }
-                        )
-                    }
+                    )
+
+                    HorizontalDivider(
+                        modifier = Modifier.padding(vertical = 4.dp),
+                        color = MaterialTheme.colorScheme.outlineVariant
+                    )
+
+                    SettingsToggleRow(
+                        title = "Series badges",
+                        description = "Show series title and volume index on library cards.",
+                        checked = preferences.libraryPrefs.showSeriesBadges,
+                        onCheckedChange = {
+                            onPreferencesChanged(
+                                preferences.copy(
+                                    libraryPrefs = preferences.libraryPrefs.copy(showSeriesBadges = it)
+                                )
+                            )
+                        }
+                    )
+
+                    HorizontalDivider(
+                        modifier = Modifier.padding(vertical = 4.dp),
+                        color = MaterialTheme.colorScheme.outlineVariant
+                    )
+
+                    SettingsToggleRow(
+                        title = "Auto-shelve on import",
+                        description = "Automatically create and assign custom shelves based on EPUB genre tags.",
+                        checked = preferences.libraryPrefs.autoShelveBySubject,
+                        onCheckedChange = {
+                            onPreferencesChanged(
+                                preferences.copy(
+                                    libraryPrefs = preferences.libraryPrefs.copy(autoShelveBySubject = it)
+                                )
+                            )
+                        }
+                    )
                 }
             }
 
-            // Sync Settings Section
-            SettingsSection(title = "Cloud Synchronization") {
+            // 4. Cloud & Backup
+            LumaSectionCard(title = "Cloud & Backup") {
                 Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                    // Google Drive Sync
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically,
@@ -503,33 +413,322 @@ fun SettingsScreen(
                                 color = MaterialTheme.colorScheme.onSurface
                             )
                             Text(
-                                text = if (syncEmail != null) "Connected as $syncEmail" else "Sync library and reading progress across devices.",
+                                text = if (syncEmail != null) "Connected as $syncEmail" else "Sync library catalog and reading positions across devices.",
                                 fontSize = 12.sp,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
                     }
 
-                    Button(
-                        onClick = onSyncClick,
-                        enabled = !isSyncing,
+                    if (syncEmail != null) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Button(
+                                onClick = onSyncClick,
+                                enabled = !isSyncing,
+                                modifier = Modifier.weight(1f),
+                                shape = RoundedCornerShape(12.dp),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = MaterialTheme.colorScheme.primaryContainer,
+                                    contentColor = MaterialTheme.colorScheme.onPrimaryContainer
+                                )
+                            ) {
+                                if (isSyncing) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(18.dp),
+                                        strokeWidth = 2.dp,
+                                        color = MaterialTheme.colorScheme.onPrimaryContainer
+                                    )
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text("Syncing...", fontWeight = FontWeight.Bold)
+                                } else {
+                                    Icon(
+                                        imageVector = Icons.Default.Sync,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text("Sync Now", fontWeight = FontWeight.Bold)
+                                }
+                            }
+
+                            OutlinedButton(
+                                onClick = onDisconnectSync,
+                                enabled = !isSyncing,
+                                shape = RoundedCornerShape(12.dp),
+                                colors = ButtonDefaults.outlinedButtonColors(
+                                    contentColor = MaterialTheme.colorScheme.error
+                                )
+                            ) {
+                                Text("Disconnect", fontWeight = FontWeight.SemiBold)
+                            }
+                        }
+
+                        // Auto-sync Toggle Row
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
+                                Text(
+                                    text = "Auto-sync on app open",
+                                    fontFamily = GoogleSans,
+                                    fontSize = 14.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                                Text(
+                                    text = "Automatically synchronizes reading progress upon launching Luma Reader.",
+                                    fontSize = 12.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            Switch(
+                                checked = preferences.syncPrefs.autoSyncOnOpen,
+                                onCheckedChange = { checked ->
+                                    onPreferencesChanged(
+                                        preferences.copy(
+                                            syncPrefs = preferences.syncPrefs.copy(autoSyncOnOpen = checked)
+                                        )
+                                    )
+                                }
+                            )
+                        }
+                    } else {
+                        Button(
+                            onClick = onSyncClick,
+                            enabled = !isSyncing,
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(12.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = MaterialTheme.colorScheme.primaryContainer,
+                                contentColor = MaterialTheme.colorScheme.onPrimaryContainer
+                            )
+                        ) {
+                            if (isSyncing) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(20.dp),
+                                    strokeWidth = 2.dp,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            } else {
+                                Text(
+                                    text = "Connect Google Drive",
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+                    }
+
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+
+                    // Export Backup
+                    Row(
                         modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(12.dp),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = if (syncEmail != null) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.primaryContainer,
-                            contentColor = if (syncEmail != null) MaterialTheme.colorScheme.onErrorContainer else MaterialTheme.colorScheme.onPrimaryContainer
-                        )
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        if (isSyncing) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(20.dp),
-                                strokeWidth = 2.dp,
+                        Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
+                            Text(
+                                text = "Export Library Backup",
+                                fontFamily = GoogleSans,
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Text(
+                                text = "Export all book metadata, custom shelves, and app preferences to JSON.",
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        OutlinedButton(
+                            onClick = onExportBackupToFile,
+                            shape = RoundedCornerShape(10.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.CloudDownload,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Export")
+                        }
+                    }
+
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+
+                    // Restore Backup
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
+                            Text(
+                                text = "Restore Library Backup",
+                                fontFamily = GoogleSans,
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Text(
+                                text = "Restore library database and preferences from a previously exported JSON backup.",
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        OutlinedButton(
+                            onClick = onRestoreBackupFromFile,
+                            shape = RoundedCornerShape(10.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.FileOpen,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Restore")
+                        }
+                    }
+                }
+            }
+
+            // 5. Storage & Diagnostics
+            LumaSectionCard(title = "Storage & Diagnostics") {
+                Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                    // Storage footprint stats
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(MaterialTheme.colorScheme.surfaceContainerHigh)
+                            .padding(14.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(
+                                text = "Book Storage",
+                                fontSize = 13.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Text(
+                                text = "${storageFootprint.bookCount} books (${formatBytes(storageFootprint.booksSizeBytes)})",
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                        }
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(
+                                text = "Cover Image Cache",
+                                fontSize = 13.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Text(
+                                text = formatBytes(storageFootprint.cacheSizeBytes),
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                        }
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(
+                                text = "Total Footprint",
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Text(
+                                text = formatBytes(storageFootprint.booksSizeBytes + storageFootprint.cacheSizeBytes),
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.Bold,
                                 color = MaterialTheme.colorScheme.primary
                             )
-                        } else {
+                        }
+                    }
+
+                    // Maintenance action buttons
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        OutlinedButton(
+                            onClick = { showClearCacheDialog = true },
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.DeleteOutline,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Clear Cache", fontSize = 12.sp)
+                        }
+                        OutlinedButton(
+                            onClick = { showReindexDialog = true },
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Refresh,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Re-index", fontSize = 12.sp)
+                        }
+                    }
+
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+
+                    // About Luma Reader Card
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(16.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(48.dp)
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(MaterialTheme.colorScheme.primaryContainer),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Info,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                        Column(modifier = Modifier.weight(1f)) {
                             Text(
-                                text = if (syncEmail != null) "Disconnect Sync" else "Connect Google Drive",
-                                fontWeight = FontWeight.Bold
+                                text = "Luma Reader v1.0.0",
+                                fontFamily = GoogleSans,
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Text(
+                                text = "Powered by Readium 3.3.0 & Jetpack Compose Multiplatform. 100% Offline & Private.",
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
                     }
@@ -537,89 +736,224 @@ fun SettingsScreen(
             }
         }
     }
+
+    if (showReaderFormatBottomSheet) {
+        ReaderFormatBottomSheet(
+            preferences = preferences,
+            onPreferencesChanged = onPreferencesChanged,
+            onLivePreferencesChanged = onPreferencesChanged,
+            onDismissRequest = { showReaderFormatBottomSheet = false },
+            accentColor = MaterialTheme.colorScheme.primary,
+            book = null
+        )
+    }
+
+    if (showExportDialog) {
+        AlertDialog(
+            onDismissRequest = { showExportDialog = false },
+            title = {
+                Text(
+                    text = "Library Backup",
+                    fontFamily = GoogleSans,
+                    fontWeight = FontWeight.Bold
+                )
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text(
+                        text = "Backup contains your complete library catalog, custom shelves, and preferences.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    OutlinedTextField(
+                        value = backupJsonToExport,
+                        onValueChange = {},
+                        readOnly = true,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(140.dp),
+                        textStyle = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp)
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        clipboardManager.setText(AnnotatedString(backupJsonToExport))
+                        showExportDialog = false
+                        coroutineScope.launch {
+                            snackbarHostState.showSnackbar("Backup copied to clipboard")
+                        }
+                    },
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.ContentCopy,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Copy to Clipboard")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { showExportDialog = false },
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    Text("Close")
+                }
+            },
+            shape = RoundedCornerShape(20.dp),
+            containerColor = MaterialTheme.colorScheme.surfaceContainer
+        )
+    }
+
+    if (showImportDialog) {
+        AlertDialog(
+            onDismissRequest = { showImportDialog = false },
+            title = {
+                Text(
+                    text = "Restore Library",
+                    fontFamily = GoogleSans,
+                    fontWeight = FontWeight.Bold
+                )
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text(
+                        text = "Paste your exported JSON backup below to restore your library catalog and preferences.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    OutlinedTextField(
+                        value = importJsonInput,
+                        onValueChange = {
+                            importJsonInput = it
+                            importError = null
+                        },
+                        placeholder = { Text("Paste JSON backup here...", fontSize = 12.sp) },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(140.dp),
+                        textStyle = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
+                        isError = importError != null,
+                        supportingText = importError?.let { { Text(it, color = MaterialTheme.colorScheme.error) } }
+                    )
+                    OutlinedButton(
+                        onClick = {
+                            clipboardManager.getText()?.text?.let { clipText ->
+                                importJsonInput = clipText
+                                importError = null
+                            }
+                        },
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier.align(Alignment.End)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.ContentPaste,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Paste Clipboard", fontSize = 12.sp)
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        if (importJsonInput.isBlank()) {
+                            importError = "Please enter backup JSON"
+                            return@Button
+                        }
+                        val success = onImportBackup(importJsonInput)
+                        if (success) {
+                            showImportDialog = false
+                            coroutineScope.launch {
+                                snackbarHostState.showSnackbar("Library restored successfully")
+                            }
+                        } else {
+                            importError = "Invalid backup JSON structure"
+                        }
+                    },
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    Text("Restore")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { showImportDialog = false },
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    Text("Cancel")
+                }
+            },
+            shape = RoundedCornerShape(20.dp),
+            containerColor = MaterialTheme.colorScheme.surfaceContainer
+        )
+    }
+
+    if (showClearCacheDialog) {
+        LumaConfirmationDialog(
+            title = "Clear Cover Cache?",
+            message = "This will delete all cached book covers (${formatBytes(storageFootprint.cacheSizeBytes)}). Cover images will be re-extracted automatically as you browse your library.",
+            confirmText = "Clear Cache",
+            isDestructive = true,
+            onConfirm = {
+                showClearCacheDialog = false
+                val freed = onClearCoverCache()
+                coroutineScope.launch {
+                    snackbarHostState.showSnackbar("Cover cache cleared (${formatBytes(freed)} freed)")
+                }
+            },
+            onDismiss = { showClearCacheDialog = false }
+        )
+    }
+
+    if (showReindexDialog) {
+        LumaConfirmationDialog(
+            title = "Re-index Library?",
+            message = "This will scan your library storage, verify that all book files exist on disk, and update the catalog.",
+            confirmText = "Re-index",
+            onConfirm = {
+                showReindexDialog = false
+                val verifiedCount = onReindexLibrary()
+                coroutineScope.launch {
+                    snackbarHostState.showSnackbar("Library re-indexed ($verifiedCount books verified)")
+                }
+            },
+            onDismiss = { showReindexDialog = false }
+        )
+    }
+}
+
+private fun formatBytes(bytes: Long): String {
+    if (bytes <= 0L) return "0 B"
+    val units = arrayOf("B", "KB", "MB", "GB")
+    var digitGroups = 0
+    var b = bytes.toDouble()
+    while (b >= 1024.0 && digitGroups < units.size - 1) {
+        b /= 1024.0
+        digitGroups++
+    }
+    return if (digitGroups == 0) {
+        "${b.toLong()} ${units[digitGroups]}"
+    } else {
+        val rounded = ((b * 10).toLong()) / 10.0
+        "$rounded ${units[digitGroups]}"
+    }
 }
 
 @Composable
 fun SettingsSection(
     title: String,
-    content: @Composable () -> Unit
+    content: @Composable ColumnScope.() -> Unit
 ) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceContainer
-        ),
-        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
-    ) {
-        Column(
-            modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
-        ) {
-            Text(
-                text = title,
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.primary,
-                fontFamily = GoogleSans
-            )
-            content()
-        }
-    }
+    LumaSectionCard(
+        title = title,
+        content = content
+    )
 }
 
-@Composable
-fun ThemeOptionCard(
-    title: String,
-    isSelected: Boolean,
-    onClick: () -> Unit,
-    colors: List<Color>,
-    modifier: Modifier = Modifier
-) {
-    val borderColor by androidx.compose.animation.animateColorAsState(
-        targetValue = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline.copy(alpha = 0.2f),
-        animationSpec = androidx.compose.animation.core.spring(dampingRatio = androidx.compose.animation.core.Spring.DampingRatioLowBouncy, stiffness = androidx.compose.animation.core.Spring.StiffnessLow)
-    )
-    val borderWidth by androidx.compose.animation.core.animateDpAsState(
-        targetValue = if (isSelected) 2.dp else 1.dp,
-        animationSpec = androidx.compose.animation.core.spring(dampingRatio = androidx.compose.animation.core.Spring.DampingRatioLowBouncy, stiffness = androidx.compose.animation.core.Spring.StiffnessLow)
-    )
-    
-    Column(
-        modifier = modifier
-            .clickable(onClick = onClick)
-            .border(borderWidth, borderColor, RoundedCornerShape(12.dp))
-            .padding(8.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(8.dp)
-    ) {
-        // Mock Page Representation
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(48.dp)
-                .clip(RoundedCornerShape(8.dp))
-                .background(Brush.linearGradient(colors))
-                .border(1.dp, Color.Black.copy(alpha = 0.1f), RoundedCornerShape(8.dp)),
-            contentAlignment = Alignment.Center
-        ) {
-            Column(
-                modifier = Modifier.padding(4.dp),
-                verticalArrangement = Arrangement.spacedBy(2.dp)
-            ) {
-                // Mock lines of text
-                val textColor = if (colors.first() == Color.White || colors.first() == Color(0xFFFAF7F0)) Color.Black.copy(alpha = 0.4f) else Color.White.copy(alpha = 0.4f)
-                Box(modifier = Modifier.fillMaxWidth(0.8f).height(4.dp).background(textColor))
-                Box(modifier = Modifier.fillMaxWidth(0.6f).height(4.dp).background(textColor))
-            }
-        }
-        Text(
-            text = title,
-            fontSize = 11.sp,
-            fontWeight = FontWeight.Bold,
-            color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
-        )
-    }
-}
-
-// Deleted SettingsMarginSliderItem component

@@ -1,8 +1,10 @@
 package com.example.lumareader.ui.reader
 
 import androidx.compose.animation.*
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -10,6 +12,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
@@ -17,12 +20,11 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.pager.HorizontalPager
-import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.*
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -36,16 +38,35 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.lumareader.data.model.Book
+import com.example.lumareader.data.model.BookAnnotation
 import com.example.lumareader.data.model.LumaThemeMode
 import com.example.lumareader.data.model.ReadingPreferences
+import com.example.lumareader.data.model.PageNavigationStyle
 import com.example.lumareader.data.model.MarginLockMode
 import com.example.lumareader.data.model.ImageHandlingMode
+import com.example.lumareader.data.model.ColumnLayoutMode
+import com.example.lumareader.data.model.BottomBarDisplayMode
+import com.example.lumareader.data.model.TextJustification
 import com.example.lumareader.theme.GoogleSans
+import com.example.lumareader.theme.LiterataFont
+import com.example.lumareader.theme.InterFont
+import com.example.lumareader.theme.LightBackground
+import com.example.lumareader.theme.SepiaBackground
+import com.example.lumareader.theme.SlateBackground
+import com.example.lumareader.theme.AmoledBackground
+import com.example.lumareader.theme.toComposeColor
 import kotlinx.coroutines.launch
-import androidx.compose.ui.platform.LocalHapticFeedback
-import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.platform.LocalDensity
+import com.example.lumareader.ui.utils.LumaHapticFeedbackType
+import com.example.lumareader.ui.utils.rememberLumaHaptics
+import androidx.compose.ui.unit.IntOffset
+import kotlin.math.roundToInt
 import com.example.lumareader.ui.utils.BackHandler
 import com.example.lumareader.ui.utils.LumaSlider
+import com.example.lumareader.ui.components.*
+import com.example.lumareader.ui.reader.components.ReaderFormatBottomSheet
 
 data class SpineItemInfo(
     val index: Int,
@@ -62,7 +83,10 @@ fun ReaderScreen(
     preferences: ReadingPreferences,
     onBackClick: () -> Unit,
     onPreferencesChanged: (ReadingPreferences) -> Unit,
-    onProgressUpdated: (spineIndex: Int, progress: Float) -> Unit,
+    onProgressUpdated: (spineIndex: Int, progress: Float, locatorJson: String?) -> Unit,
+    onAddAnnotation: (BookAnnotation) -> Unit = {},
+    onDeleteAnnotation: (String) -> Unit = {},
+    onUpdateAnnotation: (BookAnnotation) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
@@ -142,7 +166,10 @@ fun ReaderScreen(
     
     var showFormatSheet by remember { mutableStateOf(false) }
 
-    val accentColor = remember(preferences.accentColorHex) { preferences.accentColorHex.toComposeColor() }
+    var livePreferences by remember(preferences) { mutableStateOf(preferences) }
+    LaunchedEffect(preferences) { livePreferences = preferences }
+
+    val accentColor = remember(livePreferences.accentColorHex) { livePreferences.accentColorHex.toComposeColor() }
     
     // Core state tracking what chapter we are in
     if (book.spine.isEmpty()) {
@@ -158,35 +185,16 @@ fun ReaderScreen(
     // Save progression position
     var currentProgression by remember { mutableStateOf(book.currentProgression) }
 
-    val pagerState = rememberPagerState(
-        initialPage = currentSpineIndex,
-        pageCount = { book.spine.size }
-    )
-
-    // Sync pagerState.currentPage to currentSpineIndex and save progress on complete page changes
-    LaunchedEffect(pagerState.currentPage) {
-        if (currentSpineIndex != pagerState.currentPage) {
-            val movingForward = pagerState.currentPage > currentSpineIndex
-            currentSpineIndex = pagerState.currentPage
-            currentProgression = if (movingForward) 0f else 1.0f
-            activeHashAnchor = null
-            onProgressUpdated(pagerState.currentPage, currentProgression)
-        }
-    }
-
-    // Sync currentSpineIndex updates from TOC or Progress Slider back to PagerState
-    LaunchedEffect(currentSpineIndex) {
-        if (pagerState.currentPage != currentSpineIndex) {
-            pagerState.scrollToPage(currentSpineIndex)
-        }
-    }
+    val readerController = remember { ReadiumReaderController() }
 
     // Pages tracking for chapter remaining calculations
-    var currentPageInChapter by remember(currentSpineIndex) { mutableStateOf(1) }
-    var totalPagesInChapter by remember(currentSpineIndex) { mutableStateOf(1) }
+    var currentBookPage by remember(currentSpineIndex) { mutableStateOf(1) }
+    var totalBookPages by remember(currentSpineIndex) { mutableStateOf(1) }
+    var chapterPagesLeft by remember(currentSpineIndex) { mutableStateOf(0) }
 
     // Toggle overlay UI toolbars state
     var isUiVisible by remember { mutableStateOf(true) }
+    readerController.isUiVisible = isUiVisible
     var lastToggleTime by remember { mutableStateOf(0L) }
 
     // Screen-level immersive mode: hides/shows system bars based on UI visibility.
@@ -194,38 +202,66 @@ fun ReaderScreen(
     // the reader screen itself exits composition, not on every chapter swipe.
     ImmersiveModeEffect(
         isUiVisible = isUiVisible,
-        extendBehindNotch = preferences.extendBehindNotch
+        extendBehindNotch = livePreferences.extendBehindNotch,
+        keepScreenOn = livePreferences.keepScreenOn,
+        immersiveMode = livePreferences.immersiveMode
     )
 
+    // Volume button page turning - active ONLY when reader is full screen (UI toolbars hidden)
+    DisposableEffect(isUiVisible, livePreferences.volumeKeyNavigation) {
+        if (!isUiVisible && livePreferences.volumeKeyNavigation) {
+            VolumeKeyNavigationManager.onVolumeKey = { isNext ->
+                if (isNext) {
+                    readerController.goForward()
+                } else {
+                    readerController.goBackward()
+                }
+                true
+            }
+        } else {
+            VolumeKeyNavigationManager.onVolumeKey = null
+        }
+        onDispose {
+            VolumeKeyNavigationManager.onVolumeKey = null
+        }
+    }
+
     // Haptics and scrubbing tracking
-    val haptic = LocalHapticFeedback.current
+    val haptic = rememberLumaHaptics(livePreferences.hapticsEnabled)
     var isScrubbing by remember { mutableStateOf(false) }
     var scrubProgress by remember { mutableStateOf(0f) }
+
+    // Pull-down to dismiss gesture state
+    val pullDownOffset = remember { Animatable(0f) }
+    val density = LocalDensity.current
+    val dismissThresholdPx = remember(density) { with(density) { 120.dp.toPx() } }
 
     // Position reset states
     var initialMenuSpineIndex by remember { mutableStateOf<Int?>(null) }
     var initialMenuProgression by remember { mutableStateOf<Float?>(null) }
+    var initialMenuLocatorJson by remember { mutableStateOf<String?>(null) }
+    var currentLocatorJson by remember { mutableStateOf<String?>(book.lastLocatorJson) }
+    var bottomBarHeightDp by remember { mutableStateOf(0.dp) }
 
     LaunchedEffect(isUiVisible) {
         if (isUiVisible) {
             initialMenuSpineIndex = currentSpineIndex
             initialMenuProgression = currentProgression
+            initialMenuLocatorJson = currentLocatorJson
         } else {
             initialMenuSpineIndex = null
             initialMenuProgression = null
+            initialMenuLocatorJson = null
         }
     }
 
-    val entireBookProgress = remember(currentSpineIndex, currentProgression, book.spine.size) {
-        (currentSpineIndex.toFloat() + currentProgression) / book.spine.size.toFloat()
-    }
+    val entireBookProgress = currentProgression.coerceIn(0f, 1f)
 
     val displayProgress = if (isScrubbing) scrubProgress else entireBookProgress
-    val displaySpineIndex = remember(displayProgress, book.spine.size) {
+    val displaySpineIndex = if (isScrubbing) {
         (displayProgress * book.spine.size).toInt().coerceIn(0, book.spine.size - 1)
-    }
-    val displayProgression = remember(displayProgress, book.spine.size, displaySpineIndex) {
-        ((displayProgress * book.spine.size) - displaySpineIndex).coerceIn(0f, 0.99f)
+    } else {
+        currentSpineIndex
     }
     val displayBookPercentage = (displayProgress * 100).toInt()
 
@@ -235,12 +271,17 @@ fun ReaderScreen(
     }
     
     val isSystemDark = isSystemInDarkTheme()
-    val resolvedBgColor = remember(preferences.themeMode, isSystemDark) {
-        when (preferences.themeMode) {
-            LumaThemeMode.LIGHT -> Color(0xFFFFFFFF)
-            LumaThemeMode.SLATE_GRAY -> Color(0xFF1C2025)
-            LumaThemeMode.AMOLED_BLACK -> Color(0xFF000000)
-            LumaThemeMode.SYSTEM -> if (isSystemDark) Color(0xFF1C2025) else Color(0xFFFFFFFF)
+    val resolvedBgColor = remember(livePreferences.themeMode, livePreferences.dayThemeMode, livePreferences.nightThemeMode, isSystemDark) {
+        val effectiveTheme = when (livePreferences.themeMode) {
+            LumaThemeMode.SYSTEM -> if (isSystemDark) livePreferences.nightThemeMode else livePreferences.dayThemeMode
+            else -> livePreferences.themeMode
+        }
+        when (effectiveTheme) {
+            LumaThemeMode.LIGHT -> LightBackground
+            LumaThemeMode.WARM_SEPIA -> SepiaBackground
+            LumaThemeMode.SLATE_GRAY -> SlateBackground
+            LumaThemeMode.AMOLED_BLACK -> AmoledBackground
+            LumaThemeMode.SYSTEM -> if (isSystemDark) SlateBackground else LightBackground
         }
     }
 
@@ -287,7 +328,8 @@ fun ReaderScreen(
                                     activeHashAnchor = hash
                                     currentSpineIndex = spinePos
                                     currentProgression = 0f
-                                    onProgressUpdated(spinePos, 0f)
+                                    readerController.goToChapter(spinePos, tocItem.href)
+                                    onProgressUpdated(spinePos, 0f, null)
                                 }
                                 scope.launch { drawerState.close() }
                             },
@@ -303,69 +345,42 @@ fun ReaderScreen(
             }
         }
     ) {
-        Box(
+        BoxWithConstraints(
             modifier = Modifier
                 .fillMaxSize()
+                .offset { IntOffset(0, pullDownOffset.value.roundToInt()) }
                 .background(resolvedBgColor)
         ) {
-            HorizontalPager(
-                state = pagerState,
-                modifier = Modifier.fillMaxSize(),
-                beyondViewportPageCount = 1,
-                userScrollEnabled = false
-            ) { pageIndex ->
-                val targetChapterPath = book.spine[pageIndex]
-                ReaderWebView(
-                    book = book,
-                    chapterPath = targetChapterPath,
-                    preferences = preferences,
-                    initialProgression = if (pageIndex == currentSpineIndex) currentProgression else {
-                        if (pageIndex > currentSpineIndex) 0f else 1.0f
-                    },
-                    isUiVisible = isUiVisible,
-                    onProgressChanged = { newProgress ->
-                        if (pageIndex == currentSpineIndex) {
-                            currentProgression = newProgress
-                            onProgressUpdated(pageIndex, newProgress)
-                        }
-                    },
-                    onPageInfoChanged = { currentPage, totalPages ->
-                        if (pageIndex == currentSpineIndex) {
-                            currentPageInChapter = currentPage
-                            totalPagesInChapter = totalPages
-                        }
-                    },
-                    onNextChapter = {
-                        if (currentSpineIndex < book.spine.size - 1) {
-                            scope.launch {
-                                pagerState.animateScrollToPage(currentSpineIndex + 1)
-                            }
-                        }
-                    },
-                    onPrevChapter = {
-                        if (currentSpineIndex > 0) {
-                            scope.launch {
-                                pagerState.animateScrollToPage(currentSpineIndex - 1)
-                            }
-                        }
-                    },
-                    onToggleUI = {
-                        val currentTime = System.currentTimeMillis()
-                        if (currentTime - lastToggleTime > 500L) {
-                            isUiVisible = !isUiVisible
-                            lastToggleTime = currentTime
-                        }
-                    },
-                    onNavigateToChapter = { spineIndex, hash ->
-                        activeHashAnchor = hash
-                        currentSpineIndex = spineIndex
-                        currentProgression = 0f
-                        onProgressUpdated(spineIndex, 0f)
-                    },
-                    targetHash = if (pageIndex == currentSpineIndex) activeHashAnchor else null,
-                    modifier = Modifier.fillMaxSize()
-                )
-            }
+            val isNarrowWindow = maxWidth < 380.dp
+            val isVeryNarrowWindow = maxWidth < 300.dp
+
+            ReadiumEpubReader(
+                book = book,
+                preferences = livePreferences,
+                controller = readerController,
+                onProgressChanged = { chapterProg, spineIdx, _, locatorJson ->
+                    currentProgression = chapterProg
+                    currentSpineIndex = spineIdx
+                    currentLocatorJson = locatorJson
+                    onProgressUpdated(spineIdx, chapterProg, locatorJson)
+                },
+                onPageInfoChanged = { curPage, totalPages, pagesLeftInChapter ->
+                    currentBookPage = curPage
+                    totalBookPages = totalPages
+                    chapterPagesLeft = pagesLeftInChapter
+                },
+                onToggleUI = {
+                    val currentTime = System.currentTimeMillis()
+                    if (currentTime - lastToggleTime > 300L) {
+                        isUiVisible = !isUiVisible
+                        lastToggleTime = currentTime
+                    }
+                },
+                onAddAnnotation = onAddAnnotation,
+                onDeleteAnnotation = onDeleteAnnotation,
+                onUpdateAnnotation = onUpdateAnnotation,
+                modifier = Modifier.fillMaxSize()
+            )
 
             // Touch shield overlay to block book interaction and close menus on tap
             if (isUiVisible) {
@@ -382,7 +397,7 @@ fun ReaderScreen(
                 )
             }
 
-            // Absolute top overlay Top Bar
+            // Absolute top overlay Top Bar with pull-down to dismiss gesture
             AnimatedVisibility(
                 visible = isUiVisible,
                 enter = slideInVertically(animationSpec = spring(dampingRatio = Spring.DampingRatioLowBouncy, stiffness = Spring.StiffnessLow)) { -it } + fadeIn(animationSpec = spring(stiffness = Spring.StiffnessLow)),
@@ -393,47 +408,107 @@ fun ReaderScreen(
             ) {
                 Surface(
                     tonalElevation = 3.dp,
-                    color = MaterialTheme.colorScheme.surfaceContainer
+                    color = MaterialTheme.colorScheme.surfaceContainer,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .pointerInput(Unit) {
+                            detectVerticalDragGestures(
+                                onDragStart = {},
+                                onVerticalDrag = { change, dragAmount ->
+                                    if (dragAmount > 0f || pullDownOffset.value > 0f) {
+                                        change.consume()
+                                        scope.launch {
+                                            val newOffset = (pullDownOffset.value + dragAmount * 0.75f).coerceAtLeast(0f)
+                                            pullDownOffset.snapTo(newOffset)
+                                        }
+                                    }
+                                },
+                                onDragEnd = {
+                                    if (pullDownOffset.value > dismissThresholdPx) {
+                                        scope.launch {
+                                            haptic.perform(LumaHapticFeedbackType.PAGE_TURN)
+                                            pullDownOffset.animateTo(
+                                                targetValue = dismissThresholdPx * 3.5f,
+                                                animationSpec = spring(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = Spring.StiffnessMedium)
+                                            )
+                                            onBackClick()
+                                        }
+                                    } else {
+                                        scope.launch {
+                                            pullDownOffset.animateTo(
+                                                targetValue = 0f,
+                                                animationSpec = spring(dampingRatio = Spring.DampingRatioLowBouncy, stiffness = Spring.StiffnessLow)
+                                            )
+                                        }
+                                    }
+                                },
+                                onDragCancel = {
+                                    scope.launch {
+                                        pullDownOffset.animateTo(
+                                            targetValue = 0f,
+                                            animationSpec = spring(dampingRatio = Spring.DampingRatioLowBouncy, stiffness = Spring.StiffnessLow)
+                                        )
+                                    }
+                                }
+                            )
+                        }
                 ) {
-                    TopAppBar(
-                        title = {
-                            Column {
-                                Text(
-                                    text = book.title,
-                                    style = MaterialTheme.typography.titleMedium,
-                                    fontFamily = GoogleSans,
-                                    fontWeight = FontWeight.Bold,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                                Text(
-                                    text = currentChapterTitle,
-                                    style = MaterialTheme.typography.labelSmall,
-                                    fontFamily = GoogleSans,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                            }
-                        },
-                        navigationIcon = {
-                            IconButton(onClick = onBackClick) {
-                                Icon(imageVector = Icons.Default.ArrowBack, contentDescription = "Back")
-                            }
-                        },
-                        actions = {
-                            IconButton(onClick = { showFormatSheet = true }) {
-                                Icon(
-                                    imageVector = Icons.Default.FormatSize,
-                                    contentDescription = "Format settings",
-                                    tint = accentColor
-                                )
-                            }
-                        },
-                        colors = TopAppBarDefaults.topAppBarColors(
-                            containerColor = Color.Transparent
+                    Column(modifier = Modifier.fillMaxWidth()) {
+                        TopAppBar(
+                            title = {
+                                Column {
+                                    Text(
+                                        text = book.title,
+                                        style = if (isNarrowWindow) MaterialTheme.typography.titleSmall else MaterialTheme.typography.titleMedium,
+                                        fontFamily = GoogleSans,
+                                        fontWeight = FontWeight.Bold,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    Text(
+                                        text = currentChapterTitle,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontFamily = GoogleSans,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                            },
+                            navigationIcon = {
+                                IconButton(onClick = onBackClick) {
+                                    Icon(imageVector = Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                                }
+                            },
+                            actions = {
+                                IconButton(onClick = { showFormatSheet = true }) {
+                                    Icon(
+                                        imageVector = Icons.Default.Settings,
+                                        contentDescription = "Reader options",
+                                        tint = accentColor
+                                    )
+                                }
+                            },
+                            colors = TopAppBarDefaults.topAppBarColors(
+                                containerColor = Color.Transparent
+                            )
                         )
-                    )
+                        // Pill drag handle indicating swipe down to dismiss
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(bottom = 6.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .width(36.dp)
+                                    .height(4.dp)
+                                    .clip(RoundedCornerShape(2.dp))
+                                    .background(MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f))
+                            )
+                        }
+                    }
                 }
             }
 
@@ -445,11 +520,34 @@ fun ReaderScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .align(Alignment.BottomCenter)
+                    .onGloballyPositioned { coordinates ->
+                        val h = with(density) { coordinates.size.height.toDp() }
+                        if (h > 0.dp) {
+                            bottomBarHeightDp = h
+                        }
+                    }
             ) {
                 Surface(
                     tonalElevation = 3.dp,
                     color = MaterialTheme.colorScheme.surfaceContainer,
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .pointerInput(Unit) {
+                            var totalDragY = 0f
+                            detectVerticalDragGestures(
+                                onDragStart = { totalDragY = 0f },
+                                onVerticalDrag = { change, dragAmount ->
+                                    totalDragY += dragAmount
+                                    if (totalDragY < -25f) {
+                                        change.consume()
+                                        if (!showFormatSheet) {
+                                            showFormatSheet = true
+                                            haptic.perform(LumaHapticFeedbackType.TAP)
+                                        }
+                                    }
+                                }
+                            )
+                        }
                 ) {
                     Column(
                         modifier = Modifier
@@ -457,11 +555,32 @@ fun ReaderScreen(
                             .navigationBarsPadding()
                             .padding(bottom = 8.dp)
                     ) {
+                        // Drag handle visual cue & quick open tap target
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = 8.dp, bottom = 2.dp)
+                                .clickable {
+                                    showFormatSheet = true
+                                    haptic.perform(LumaHapticFeedbackType.TAP)
+                                },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .width(36.dp)
+                                    .height(4.dp)
+                                    .background(
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f),
+                                        shape = CircleShape
+                                    )
+                            )
+                        }
                         // Slider progress bar for entire book traversal
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(horizontal = 16.dp, vertical = 4.dp),
+                                .padding(horizontal = if (isNarrowWindow) 8.dp else 16.dp, vertical = 4.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             IconButton(
@@ -469,11 +588,14 @@ fun ReaderScreen(
                                     if (currentSpineIndex > 0) {
                                         currentSpineIndex--
                                         currentProgression = 0f
-                                        onProgressUpdated(currentSpineIndex, 0f)
-                                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                        val prevChapterHref = book.spine[currentSpineIndex]
+                                        readerController.goToChapter(currentSpineIndex, prevChapterHref)
+                                        onProgressUpdated(currentSpineIndex, 0f, null)
+                                        haptic.perform(LumaHapticFeedbackType.PAGE_TURN)
                                     }
                                 },
-                                enabled = currentSpineIndex > 0
+                                enabled = currentSpineIndex > 0,
+                                modifier = if (isVeryNarrowWindow) Modifier.size(36.dp) else Modifier
                             ) {
                                 Icon(
                                     imageVector = Icons.Default.ChevronLeft,
@@ -492,10 +614,12 @@ fun ReaderScreen(
                                     if (magnetized != scrubProgress) {
                                         val oldMagnetizedSpine = (scrubProgress * book.spine.size).toInt().coerceIn(0, book.spine.size - 1)
                                         val newMagnetizedSpine = (magnetized * book.spine.size).toInt().coerceIn(0, book.spine.size - 1)
+                                        val wasSnapped = scrubProgress != rawValue
+                                        val isNowSnapped = magnetized != rawValue
                                         
-                                        // Trigger haptics on chapter boundary snap ticks
-                                        if (newMagnetizedSpine != oldMagnetizedSpine) {
-                                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                        // Trigger tactile haptic ticks on chapter boundary snap or chapter crossing
+                                        if (newMagnetizedSpine != oldMagnetizedSpine || (!wasSnapped && isNowSnapped)) {
+                                            haptic.perform(LumaHapticFeedbackType.SEGMENT_TICK)
                                         }
                                         
                                         scrubProgress = magnetized
@@ -506,10 +630,11 @@ fun ReaderScreen(
                                     isScrubbing = false
                                     val totalSpinePosition = sliderProgress * book.spine.size
                                     val newSpineIndex = totalSpinePosition.toInt().coerceIn(0, book.spine.size - 1)
-                                    val newProgression = (totalSpinePosition - newSpineIndex).coerceIn(0f, 0.99f)
+                                    val chapterProg = (totalSpinePosition - newSpineIndex).coerceIn(0f, 1f)
                                     currentSpineIndex = newSpineIndex
-                                    currentProgression = newProgression
-                                    onProgressUpdated(newSpineIndex, newProgression)
+                                    currentProgression = chapterProg
+                                    readerController.goToProgression(sliderProgress)
+                                    onProgressUpdated(newSpineIndex, chapterProg, null)
                                 },
                                 colors = SliderDefaults.colors(
                                     thumbColor = accentColor,
@@ -524,11 +649,14 @@ fun ReaderScreen(
                                     if (currentSpineIndex < book.spine.size - 1) {
                                         currentSpineIndex++
                                         currentProgression = 0f
-                                        onProgressUpdated(currentSpineIndex, 0f)
-                                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                        val nextChapterHref = book.spine[currentSpineIndex]
+                                        readerController.goToChapter(currentSpineIndex, nextChapterHref)
+                                        onProgressUpdated(currentSpineIndex, 0f, null)
+                                        haptic.perform(LumaHapticFeedbackType.PAGE_TURN)
                                     }
                                 },
-                                enabled = currentSpineIndex < book.spine.size - 1
+                                enabled = currentSpineIndex < book.spine.size - 1,
+                                modifier = if (isVeryNarrowWindow) Modifier.size(36.dp) else Modifier
                             ) {
                                 Icon(
                                     imageVector = Icons.Default.ChevronRight,
@@ -539,28 +667,37 @@ fun ReaderScreen(
                         }
 
                         // Table of Contents & details row
-                        val pagesRemaining = (totalPagesInChapter - currentPageInChapter).coerceAtLeast(0)
                         val activeProcessedItem = processedSpineItems[displaySpineIndex]
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(horizontal = 24.dp)
+                                .padding(horizontal = if (isNarrowWindow) 12.dp else 24.dp)
                                 .padding(bottom = 8.dp),
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Column(modifier = Modifier.weight(1f)) {
-                                val progressText = if (activeProcessedItem.isRealChapter) {
-                                    "Book Progress: $displayBookPercentage% • Chapter ${activeProcessedItem.realChapterNumber} of $totalRealChapters"
+                                val progressText = if (isNarrowWindow) {
+                                    if (activeProcessedItem.isRealChapter) {
+                                        "$displayBookPercentage% • Ch. ${activeProcessedItem.realChapterNumber}/${totalRealChapters}"
+                                    } else {
+                                        "$displayBookPercentage% • ${activeProcessedItem.title}"
+                                    }
                                 } else {
-                                    "Book Progress: $displayBookPercentage% • ${activeProcessedItem.title}"
+                                    if (activeProcessedItem.isRealChapter) {
+                                        "Book Progress: $displayBookPercentage% • Chapter ${activeProcessedItem.realChapterNumber} of $totalRealChapters"
+                                    } else {
+                                        "Book Progress: $displayBookPercentage% • ${activeProcessedItem.title}"
+                                    }
                                 }
                                 Text(
                                     text = progressText,
                                     style = MaterialTheme.typography.labelSmall,
                                     fontFamily = GoogleSans,
                                     fontWeight = FontWeight.Medium,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
                                 )
                                 if (isScrubbing) {
                                     Text(
@@ -568,26 +705,63 @@ fun ReaderScreen(
                                         style = MaterialTheme.typography.labelMedium,
                                         fontFamily = GoogleSans,
                                         color = accentColor,
-                                        fontWeight = FontWeight.Bold
+                                        fontWeight = FontWeight.Bold,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
                                     )
                                 } else {
-                                    val pageText = if (totalPagesInChapter <= 1) {
-                                        "Page $currentPageInChapter of $totalPagesInChapter"
-                                    } else {
-                                        "Page $currentPageInChapter of $totalPagesInChapter ($pagesRemaining page${if (pagesRemaining == 1) "" else "s"} left)"
+                                    val pageText = when (livePreferences.bottomBarDisplayMode) {
+                                        BottomBarDisplayMode.PAGES -> {
+                                            if (livePreferences.navigationStyle == PageNavigationStyle.CONTINUOUS_SCROLL) {
+                                                "$currentChapterTitle • $displayBookPercentage%"
+                                            } else if (totalBookPages <= 1) {
+                                                if (isNarrowWindow) "p. $currentBookPage / $totalBookPages" else "Page $currentBookPage of $totalBookPages"
+                                            } else {
+                                                if (isNarrowWindow) "p. $currentBookPage / $totalBookPages • ${chapterPagesLeft} left"
+                                                else "Page $currentBookPage of $totalBookPages ($chapterPagesLeft page${if (chapterPagesLeft == 1) "" else "s"} left in chapter)"
+                                            }
+                                        }
+                                        BottomBarDisplayMode.TIME -> {
+                                            val estimatedMinsLeft = (chapterPagesLeft * 1024 / (livePreferences.readingSpeedWpm * 5)).coerceAtLeast(1)
+                                            if (livePreferences.navigationStyle == PageNavigationStyle.CONTINUOUS_SCROLL) {
+                                                "$currentChapterTitle • ~${estimatedMinsLeft}m left"
+                                            } else {
+                                                if (isNarrowWindow) "p. $currentBookPage / $totalBookPages • ~${estimatedMinsLeft}m left"
+                                                else "Page $currentBookPage of $totalBookPages (~$estimatedMinsLeft min${if (estimatedMinsLeft == 1) "" else "s"} left in chapter)"
+                                            }
+                                        }
+                                        BottomBarDisplayMode.COMPACT -> {
+                                            "$currentChapterTitle • $displayBookPercentage%"
+                                        }
                                     }
                                     Text(
                                         text = pageText,
                                         style = MaterialTheme.typography.labelMedium,
                                         fontFamily = GoogleSans,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f)
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.clickable {
+                                            val nextMode = when (livePreferences.bottomBarDisplayMode) {
+                                                BottomBarDisplayMode.PAGES -> BottomBarDisplayMode.TIME
+                                                BottomBarDisplayMode.TIME -> BottomBarDisplayMode.COMPACT
+                                                BottomBarDisplayMode.COMPACT -> BottomBarDisplayMode.PAGES
+                                            }
+                                            val updated = livePreferences.copy(bottomBarDisplayMode = nextMode)
+                                            livePreferences = updated
+                                            onPreferencesChanged(updated)
+                                            haptic.perform(LumaHapticFeedbackType.TAP)
+                                        }
                                     )
                                 }
                             }
                             
-                            IconButton(onClick = { scope.launch { drawerState.open() } }) {
+                            IconButton(
+                                onClick = { scope.launch { drawerState.open() } },
+                                modifier = if (isVeryNarrowWindow) Modifier.size(36.dp) else Modifier
+                            ) {
                                 Icon(
-                                    imageVector = Icons.Default.MenuBook,
+                                    imageVector = Icons.AutoMirrored.Filled.MenuBook,
                                     contentDescription = "Table of contents",
                                     tint = accentColor
                                 )
@@ -600,44 +774,64 @@ fun ReaderScreen(
             // Floating Capsule Reset Position button
             val hasMoved = initialMenuSpineIndex != null && 
                            (currentSpineIndex != initialMenuSpineIndex || 
-                            kotlin.math.abs(currentProgression - (initialMenuProgression ?: 0f)) > 0.01f)
+                            kotlin.math.abs(currentProgression - (initialMenuProgression ?: 0f)) > 0.005f ||
+                            (isScrubbing && kotlin.math.abs(scrubProgress - entireBookProgress) > 0.005f))
+
+            val effectiveBottomPadding = if (bottomBarHeightDp > 0.dp) bottomBarHeightDp + 16.dp else 192.dp
             
             AnimatedVisibility(
                 visible = isUiVisible && hasMoved,
-                enter = fadeIn(animationSpec = spring(stiffness = Spring.StiffnessLow)) + slideInVertically(animationSpec = spring(dampingRatio = Spring.DampingRatioLowBouncy, stiffness = Spring.StiffnessLow)) { it / 2 },
-                exit = fadeOut() + slideOutVertically(animationSpec = spring(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = Spring.StiffnessMedium)) { it / 2 },
+                enter = slideInVertically(
+                    initialOffsetY = { it },
+                    animationSpec = spring(dampingRatio = Spring.DampingRatioLowBouncy, stiffness = Spring.StiffnessLow)
+                ) + fadeIn(animationSpec = spring(stiffness = Spring.StiffnessLow)),
+                exit = slideOutVertically(
+                    targetOffsetY = { it },
+                    animationSpec = spring(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = Spring.StiffnessMedium)
+                ) + fadeOut(),
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
-                    .padding(bottom = 148.dp) // Float elegantly above the bottom sheet / bar
+                    .padding(bottom = effectiveBottomPadding) // Float elegantly above the bottom card
             ) {
                 Button(
                     onClick = {
+                        val originalLocator = initialMenuLocatorJson
                         val originalSpine = initialMenuSpineIndex
                         val originalProg = initialMenuProgression
-                        if (originalSpine != null && originalProg != null) {
-                            lastToggleTime = System.currentTimeMillis() // Capture time to block touch bleed-through
+                        if (!originalLocator.isNullOrBlank()) {
+                            readerController.goToLocator(originalLocator)
+                            if (originalSpine != null && originalProg != null) {
+                                currentSpineIndex = originalSpine
+                                currentProgression = originalProg
+                                currentLocatorJson = originalLocator
+                                onProgressUpdated(originalSpine, originalProg, originalLocator)
+                            }
+                            haptic.perform(LumaHapticFeedbackType.LONG_PRESS)
+                        } else if (originalSpine != null && originalProg != null) {
                             currentSpineIndex = originalSpine
                             currentProgression = originalProg
-                            onProgressUpdated(originalSpine, originalProg)
-                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            val originalHref = book.spine[originalSpine]
+                            readerController.goToChapter(originalSpine, originalHref)
+                            onProgressUpdated(originalSpine, originalProg, null)
+                            haptic.perform(LumaHapticFeedbackType.LONG_PRESS)
                         }
                     },
                     colors = ButtonDefaults.buttonColors(
                         containerColor = MaterialTheme.colorScheme.secondaryContainer,
                         contentColor = MaterialTheme.colorScheme.onSecondaryContainer
                     ),
-                    shape = RoundedCornerShape(20.dp),
+                    shape = MaterialTheme.shapes.extraLarge,
                     elevation = ButtonDefaults.buttonElevation(defaultElevation = 6.dp),
-                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)
+                    contentPadding = PaddingValues(horizontal = if (isNarrowWindow) 12.dp else 16.dp, vertical = 8.dp)
                 ) {
                     Icon(
-                        imageVector = Icons.Default.Undo,
+                        imageVector = Icons.AutoMirrored.Filled.Undo,
                         contentDescription = "Reset position",
                         modifier = Modifier.size(16.dp)
                     )
-                    Spacer(modifier = Modifier.width(8.dp))
+                    Spacer(modifier = Modifier.width(if (isNarrowWindow) 4.dp else 8.dp))
                     Text(
-                        text = "Reset to original page",
+                        text = if (isNarrowWindow) "Reset" else "Reset to original page",
                         fontFamily = GoogleSans,
                         fontSize = 12.sp,
                         fontWeight = FontWeight.Bold
@@ -649,701 +843,24 @@ fun ReaderScreen(
     
     // Bottom Sheet for text formatting controls
     if (showFormatSheet) {
-        ModalBottomSheet(
-            onDismissRequest = { showFormatSheet = false },
-            sheetState = rememberModalBottomSheetState(),
-            containerColor = MaterialTheme.colorScheme.surface
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 24.dp)
-                    .padding(bottom = 40.dp)
-                    .verticalScroll(rememberScrollState())
-            ) {
-                Text(
-                    text = "Theming",
-                    fontFamily = GoogleSans,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 20.sp,
-                    color = accentColor,
-                    modifier = Modifier.padding(bottom = 16.dp)
-                )
-                
-                // Theme Picker Row
-                Text("Theme", fontFamily = GoogleSans, fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                Spacer(modifier = Modifier.height(8.dp))
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    // Bright Light
-                    ThemeOptionButton(
-                        label = "Bright",
-                        bgColor = Color(0xFFFFFFFF),
-                        textColor = Color(0xFF000000),
-                        isSelected = preferences.themeMode == LumaThemeMode.LIGHT,
-                        onClick = { onPreferencesChanged(preferences.copy(themeMode = LumaThemeMode.LIGHT)) },
-                        modifier = Modifier.weight(1f)
-                    )
-                    // Slate Gray
-                    ThemeOptionButton(
-                        label = "Slate",
-                        bgColor = Color(0xFF1C2025),
-                        textColor = Color(0xFFE2E8F0),
-                        isSelected = preferences.themeMode == LumaThemeMode.SLATE_GRAY,
-                        onClick = { onPreferencesChanged(preferences.copy(themeMode = LumaThemeMode.SLATE_GRAY)) },
-                        modifier = Modifier.weight(1f)
-                    )
-                    // AMOLED Black
-                    ThemeOptionButton(
-                        label = "Amoled",
-                        bgColor = Color(0xFF000000),
-                        textColor = Color(0xFFF3F4F6),
-                        isSelected = preferences.themeMode == LumaThemeMode.AMOLED_BLACK,
-                        onClick = { onPreferencesChanged(preferences.copy(themeMode = LumaThemeMode.AMOLED_BLACK)) },
-                        modifier = Modifier.weight(1f)
-                    )
-                }
-                
-                Spacer(modifier = Modifier.height(20.dp))
-                
-                // Font Family Row
-                Text("Font Style", fontFamily = GoogleSans, fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                Spacer(modifier = Modifier.height(8.dp))
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    FontOptionButton(
-                        label = "Literata",
-                        fontFamily = "Literata",
-                        isSelected = preferences.fontFamily == "Literata",
-                        onClick = { onPreferencesChanged(preferences.copy(fontFamily = "Literata")) },
-                        modifier = Modifier.weight(1f)
-                    )
-                    FontOptionButton(
-                        label = "Inter",
-                        fontFamily = "Inter",
-                        isSelected = preferences.fontFamily == "Inter",
-                        onClick = { onPreferencesChanged(preferences.copy(fontFamily = "Inter")) },
-                        modifier = Modifier.weight(1f)
-                    )
-                    FontOptionButton(
-                        label = "System Serif",
-                        fontFamily = "serif",
-                        isSelected = preferences.fontFamily == "serif",
-                        onClick = { onPreferencesChanged(preferences.copy(fontFamily = "serif")) },
-                        modifier = Modifier.weight(1.2f)
-                    )
-                }
-                
-                Spacer(modifier = Modifier.height(20.dp))
-
-                // Font Size Slider
-                LumaSlider(
-                    label = "Font Size",
-                    value = preferences.fontSizeSp,
-                    onValueChangeFinished = { newVal ->
-                        onPreferencesChanged(preferences.copy(fontSizeSp = newVal))
-                    },
-                    valueRange = 10f..30f,
-                    steps = 19,
-                    accentColor = accentColor,
-                    valueFormatter = { "${it.toInt()} sp" }
-                )
-
-                // Line Spacing Slider
-                Spacer(modifier = Modifier.height(12.dp))
-                LumaSlider(
-                    label = "Line Spacing",
-                    value = preferences.lineSpacing,
-                    onValueChangeFinished = { newVal ->
-                        onPreferencesChanged(preferences.copy(lineSpacing = newVal))
-                    },
-                    valueRange = 1.0f..2.0f,
-                    steps = 9,
-                    accentColor = accentColor,
-                    valueFormatter = { "${(it * 10).toInt() / 10.0}x" }
-                )
-
-                // Margins Lock Mode & Granular Margins Sliders
-                Spacer(modifier = Modifier.height(12.dp))
-                Text(
-                    text = "Margin Lock Mode",
-                    fontFamily = GoogleSans,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 14.sp,
-                    color = MaterialTheme.colorScheme.onSurface
-                )
-                Spacer(modifier = Modifier.height(8.dp))
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    listOf(
-                        MarginLockMode.LOCK_ALL to "Lock All",
-                        MarginLockMode.LOCK_VH to "Lock H/V",
-                        MarginLockMode.UNLOCKED to "Unlocked"
-                    ).forEach { (mode, label) ->
-                        val isSelected = preferences.marginLockMode == mode
-                        Box(
-                            modifier = Modifier
-                                .weight(1f)
-                                .height(36.dp)
-                                .clip(RoundedCornerShape(8.dp))
-                                .background(if (isSelected) accentColor.copy(alpha = 0.15f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f))
-                                .border(
-                                    width = if (isSelected) 1.5.dp else 1.dp,
-                                    color = if (isSelected) accentColor else MaterialTheme.colorScheme.outline.copy(alpha = 0.3f),
-                                    shape = RoundedCornerShape(8.dp)
-                                )
-                                .clickable {
-                                    val newPrefs = when (mode) {
-                                        MarginLockMode.LOCK_ALL -> {
-                                            val newVal = preferences.marginTopDp
-                                            preferences.copy(
-                                                marginLockMode = MarginLockMode.LOCK_ALL,
-                                                marginTopDp = newVal,
-                                                marginBottomDp = newVal,
-                                                marginLeftDp = newVal,
-                                                marginRightDp = newVal,
-                                                marginDp = newVal
-                                            )
-                                        }
-                                        MarginLockMode.LOCK_VH -> {
-                                            preferences.copy(
-                                                marginLockMode = MarginLockMode.LOCK_VH,
-                                                marginTopDp = preferences.marginTopDp,
-                                                marginBottomDp = preferences.marginTopDp,
-                                                marginLeftDp = preferences.marginLeftDp,
-                                                marginRightDp = preferences.marginLeftDp
-                                            )
-                                        }
-                                        MarginLockMode.UNLOCKED -> {
-                                            preferences.copy(marginLockMode = MarginLockMode.UNLOCKED)
-                                        }
-                                    }
-                                    onPreferencesChanged(newPrefs)
-                                },
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text(
-                                text = label,
-                                fontFamily = GoogleSans,
-                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
-                                fontSize = 12.sp,
-                                color = if (isSelected) accentColor else MaterialTheme.colorScheme.onSurface
-                            )
-                        }
-                    }
-                }
-                
-                Spacer(modifier = Modifier.height(16.dp))
-                
-                when (preferences.marginLockMode) {
-                    MarginLockMode.LOCK_ALL -> {
-                        LumaSlider(
-                            label = "All Margins",
-                            value = preferences.marginTopDp.toFloat(),
-                            onValueChangeFinished = { newVal ->
-                                val newValInt = newVal.toInt()
-                                onPreferencesChanged(
-                                    preferences.copy(
-                                        marginTopDp = newValInt,
-                                        marginBottomDp = newValInt,
-                                        marginLeftDp = newValInt,
-                                        marginRightDp = newValInt,
-                                        marginDp = newValInt
-                                    )
-                                )
-                            },
-                            valueRange = 8f..48f,
-                            steps = 19,
-                            accentColor = accentColor,
-                            valueFormatter = { "${it.toInt()} dp" }
-                        )
-                    }
-                    MarginLockMode.LOCK_VH -> {
-                        LumaSlider(
-                            label = "Vertical Margins (Top/Bottom)",
-                            value = preferences.marginTopDp.toFloat(),
-                            onValueChangeFinished = { newVal ->
-                                onPreferencesChanged(
-                                    preferences.copy(
-                                        marginTopDp = newVal.toInt(),
-                                        marginBottomDp = newVal.toInt()
-                                    )
-                                )
-                            },
-                            valueRange = 8f..48f,
-                            steps = 19,
-                            accentColor = accentColor,
-                            valueFormatter = { "${it.toInt()} dp" }
-                        )
-                        Spacer(modifier = Modifier.height(12.dp))
-                        LumaSlider(
-                            label = "Horizontal Margins (Left/Right)",
-                            value = preferences.marginLeftDp.toFloat(),
-                            onValueChangeFinished = { newVal ->
-                                onPreferencesChanged(
-                                    preferences.copy(
-                                        marginLeftDp = newVal.toInt(),
-                                        marginRightDp = newVal.toInt()
-                                    )
-                                )
-                            },
-                            valueRange = 8f..48f,
-                            steps = 19,
-                            accentColor = accentColor,
-                            valueFormatter = { "${it.toInt()} dp" }
-                        )
-                    }
-                    MarginLockMode.UNLOCKED -> {
-                        LumaSlider(
-                            label = "Top Margin",
-                            value = preferences.marginTopDp.toFloat(),
-                            onValueChangeFinished = { newVal ->
-                                onPreferencesChanged(preferences.copy(marginTopDp = newVal.toInt()))
-                            },
-                            valueRange = 8f..48f,
-                            steps = 19,
-                            accentColor = accentColor,
-                            valueFormatter = { "${it.toInt()} dp" }
-                        )
-                        Spacer(modifier = Modifier.height(8.dp))
-                        LumaSlider(
-                            label = "Bottom Margin",
-                            value = preferences.marginBottomDp.toFloat(),
-                            onValueChangeFinished = { newVal ->
-                                onPreferencesChanged(preferences.copy(marginBottomDp = newVal.toInt()))
-                            },
-                            valueRange = 8f..48f,
-                            steps = 19,
-                            accentColor = accentColor,
-                            valueFormatter = { "${it.toInt()} dp" }
-                        )
-                        Spacer(modifier = Modifier.height(8.dp))
-                        LumaSlider(
-                            label = "Left Margin",
-                            value = preferences.marginLeftDp.toFloat(),
-                            onValueChangeFinished = { newVal ->
-                                onPreferencesChanged(preferences.copy(marginLeftDp = newVal.toInt()))
-                            },
-                            valueRange = 8f..48f,
-                            steps = 19,
-                            accentColor = accentColor,
-                            valueFormatter = { "${it.toInt()} dp" }
-                        )
-                        Spacer(modifier = Modifier.height(8.dp))
-                        LumaSlider(
-                            label = "Right Margin",
-                            value = preferences.marginRightDp.toFloat(),
-                            onValueChangeFinished = { newVal ->
-                                onPreferencesChanged(preferences.copy(marginRightDp = newVal.toInt()))
-                            },
-                            valueRange = 8f..48f,
-                            steps = 19,
-                            accentColor = accentColor,
-                            valueFormatter = { "${it.toInt()} dp" }
-                        )
-                    }
-                }
-
-                // Layout Columns Mode Section
-                Spacer(modifier = Modifier.height(20.dp))
-                Text("Layout Columns", fontFamily = GoogleSans, fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                Spacer(modifier = Modifier.height(8.dp))
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    ThemeOptionButton(
-                        label = "Single Column",
-                        bgColor = if (preferences.twoColumnLocked) accentColor.copy(alpha = 0.15f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
-                        textColor = if (preferences.twoColumnLocked) accentColor else MaterialTheme.colorScheme.onSurface,
-                        isSelected = preferences.twoColumnLocked,
-                        onClick = { onPreferencesChanged(preferences.copy(twoColumnLocked = true)) },
-                        modifier = Modifier.weight(1f)
-                    )
-                    ThemeOptionButton(
-                        label = "Double Column",
-                        bgColor = if (!preferences.twoColumnLocked) accentColor.copy(alpha = 0.15f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
-                        textColor = if (!preferences.twoColumnLocked) accentColor else MaterialTheme.colorScheme.onSurface,
-                        isSelected = !preferences.twoColumnLocked,
-                        onClick = { onPreferencesChanged(preferences.copy(twoColumnLocked = false)) },
-                        modifier = Modifier.weight(1f)
-                    )
-                }
-
-                // Image Treatment Section
-                Spacer(modifier = Modifier.height(20.dp))
-                Text("Image Treatment", fontFamily = GoogleSans, fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                Spacer(modifier = Modifier.height(8.dp))
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    listOf(
-                        ImageHandlingMode.ORIGINAL to "Original",
-                        ImageHandlingMode.INVERT_BW to "Invert B/W",
-                        ImageHandlingMode.INVERT_ALL to "Invert All"
-                    ).forEach { (mode, label) ->
-                        val isSelected = preferences.imageHandlingMode == mode
-                        ThemeOptionButton(
-                            label = label,
-                            bgColor = if (isSelected) accentColor.copy(alpha = 0.15f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
-                            textColor = if (isSelected) accentColor else MaterialTheme.colorScheme.onSurface,
-                            isSelected = isSelected,
-                            onClick = { onPreferencesChanged(preferences.copy(imageHandlingMode = mode)) },
-                            modifier = Modifier.weight(1f)
-                        )
-                    }
-                }
-
-                // Accent Colors Section
-                Spacer(modifier = Modifier.height(20.dp))
-                Text("Accent Color", fontFamily = GoogleSans, fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                Spacer(modifier = Modifier.height(8.dp))
-                
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(16.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    // Default 1: Terracotta
-                    ColorDefaultCircle(
-                        color = Color(0xFFD45D42),
-                        isSelected = preferences.accentColorHex.equals("#D45D42", ignoreCase = true),
-                        onClick = { onPreferencesChanged(preferences.copy(accentColorHex = "#D45D42")) }
-                    )
-                    // Default 2: Indigo
-                    ColorDefaultCircle(
-                        color = Color(0xFF6366F1),
-                        isSelected = preferences.accentColorHex.equals("#6366F1", ignoreCase = true),
-                        onClick = { onPreferencesChanged(preferences.copy(accentColorHex = "#6366F1")) }
-                    )
-                    // Default 3: Emerald
-                    ColorDefaultCircle(
-                        color = Color(0xFF0F766E),
-                        isSelected = preferences.accentColorHex.equals("#0F766E", ignoreCase = true),
-                        onClick = { onPreferencesChanged(preferences.copy(accentColorHex = "#0F766E")) }
-                    )
-                    
-                    Spacer(modifier = Modifier.width(8.dp))
-                    
-                    // Horizontal Custom Color spectrum bar
-                    HueSpectrumPicker(
-                        selectedColorHex = preferences.accentColorHex,
-                        onColorSelected = { hex ->
-                            onPreferencesChanged(preferences.copy(accentColorHex = hex))
-                        },
-                        modifier = Modifier.weight(1f)
-                    )
-                }
-
-                // Notched display support toggle
-                Spacer(modifier = Modifier.height(20.dp))
-                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                Spacer(modifier = Modifier.height(16.dp))
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = "Extend behind notch",
-                            fontFamily = GoogleSans,
-                            fontSize = 14.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
-                        Text(
-                            text = "Allow reading content to utilize the entire immersive display area under the camera cutout.",
-                            fontSize = 12.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                    Switch(
-                        checked = preferences.extendBehindNotch,
-                        onCheckedChange = { onPreferencesChanged(preferences.copy(extendBehindNotch = it)) },
-                        colors = SwitchDefaults.colors(
-                            checkedThumbColor = accentColor,
-                            checkedTrackColor = accentColor.copy(alpha = 0.5f)
-                        )
-                    )
-                }
-                
-                Spacer(modifier = Modifier.height(12.dp))
-                
-                // Drop Cap Toggle Row
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = "Drop Caps",
-                            fontFamily = GoogleSans,
-                            fontSize = 14.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
-                        Text(
-                            text = "Display an elegant drop letter at the start of each chapter.",
-                            fontSize = 12.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                    Switch(
-                        checked = preferences.dropCapEnabled,
-                        onCheckedChange = { onPreferencesChanged(preferences.copy(dropCapEnabled = it)) },
-                        colors = SwitchDefaults.colors(
-                            checkedThumbColor = accentColor,
-                            checkedTrackColor = accentColor.copy(alpha = 0.5f)
-                        )
-                    )
-                }
-            }
-        }
-    }
-}
-
-@Composable
-fun ThemeOptionButton(
-    label: String,
-    bgColor: Color,
-    textColor: Color,
-    isSelected: Boolean,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier
-) {
-    Box(
-        modifier = modifier
-            .height(48.dp)
-            .clip(RoundedCornerShape(8.dp))
-            .background(bgColor)
-            .border(
-                width = if (isSelected) 2.dp else 1.dp,
-                color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline.copy(alpha = 0.5f),
-                shape = RoundedCornerShape(8.dp)
-            )
-            .clickable(onClick = onClick),
-        contentAlignment = Alignment.Center
-    ) {
-        Text(
-            text = label,
-            color = textColor,
-            fontFamily = GoogleSans,
-            fontWeight = FontWeight.Bold,
-            fontSize = 13.sp
-        )
-    }
-}
-
-@Composable
-fun FontOptionButton(
-    label: String,
-    fontFamily: String,
-    isSelected: Boolean,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier
-) {
-    Box(
-        modifier = modifier
-            .height(44.dp)
-            .clip(RoundedCornerShape(8.dp))
-            .background(if (isSelected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f))
-            .border(
-                width = 1.dp,
-                color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline.copy(alpha = 0.3f),
-                shape = RoundedCornerShape(8.dp)
-            )
-            .clickable(onClick = onClick),
-        contentAlignment = Alignment.Center
-    ) {
-        Text(
-            text = label,
-            fontFamily = when (fontFamily) {
-                "Literata" -> FontFamily.Serif
-                "Inter" -> FontFamily.SansSerif
-                "serif" -> FontFamily.Serif
-                "Google Sans" -> GoogleSans
-                else -> FontFamily.Default
+        ReaderFormatBottomSheet(
+            preferences = livePreferences,
+            onLivePreferencesChanged = { livePreferences = it },
+            onPreferencesChanged = {
+                livePreferences = it
+                onPreferencesChanged(it)
             },
-            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
-            fontSize = 13.sp,
-            color = if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface
+            onDismissRequest = { showFormatSheet = false },
+            accentColor = accentColor,
+            book = book,
+            onJumpToAnnotation = { anno ->
+                readerController.goToLocator(anno.locatorJson)
+                showFormatSheet = false
+            },
+            onDeleteAnnotation = onDeleteAnnotation
         )
     }
 }
-
-fun String.toComposeColor(): Color {
-    return try {
-        val hex = this.removePrefix("#")
-        val parsed = hex.toLong(16)
-        if (hex.length == 6) {
-            Color(0xFF000000 or parsed)
-        } else {
-            Color(parsed)
-        }
-    } catch (_: Exception) {
-        com.example.lumareader.theme.LightPrimary // Fallback to default terracotta
-    }
-}
-
-@Composable
-fun ColorDefaultCircle(
-    color: Color,
-    isSelected: Boolean,
-    onClick: () -> Unit
-) {
-    Box(
-        modifier = Modifier
-            .size(36.dp)
-            .clip(CircleShape)
-            .background(color)
-            .border(
-                width = if (isSelected) 3.dp else 0.dp,
-                color = if (isSelected) MaterialTheme.colorScheme.onSurface else Color.Transparent,
-                shape = CircleShape
-            )
-            .clickable(onClick = onClick)
-    )
-}
-
-@Composable
-fun HueSpectrumPicker(
-    selectedColorHex: String,
-    onColorSelected: (String) -> Unit,
-    modifier: Modifier = Modifier
-) {
-    val spectrumColors = remember {
-        listOf(
-            Color(0xFFFF0000), // Red
-            Color(0xFFFFFF00), // Yellow
-            Color(0xFF00FF00), // Green
-            Color(0xFF00FFFF), // Cyan
-            Color(0xFF0000FF), // Blue
-            Color(0xFFFF00FF), // Magenta
-            Color(0xFFFF0000)  // Red
-        )
-    }
-
-    val parsedSelectedColor = remember(selectedColorHex) { selectedColorHex.toComposeColor() }
-
-    val outlineColor = androidx.compose.material3.MaterialTheme.colorScheme.outline.copy(alpha = 0.5f)
-
-    Box(
-        modifier = modifier
-            .fillMaxWidth()
-            .height(28.dp),
-        contentAlignment = Alignment.CenterStart
-    ) {
-        Canvas(
-            modifier = Modifier
-                .fillMaxSize()
-                .clip(RoundedCornerShape(6.dp))
-                .pointerInput(Unit) {
-                    fun updateColor(xOffset: Float) {
-                        val fraction = (xOffset / size.width).coerceIn(0f, 1f)
-                        val hue = fraction * 360f
-                        val rgbColor = hueToColor(hue)
-                        onColorSelected(rgbColor.toHex())
-                    }
-                    detectTapGestures { offset ->
-                        updateColor(offset.x)
-                    }
-                }
-                .pointerInput(Unit) {
-                    detectDragGestures { change, _ ->
-                        change.consume()
-                        val fraction = (change.position.x / size.width).coerceIn(0f, 1f)
-                        val hue = fraction * 360f
-                        val rgbColor = hueToColor(hue)
-                        onColorSelected(rgbColor.toHex())
-                    }
-                }
-        ) {
-            drawRect(
-                brush = Brush.horizontalGradient(spectrumColors),
-                size = size
-            )
-
-            drawRect(
-                color = outlineColor,
-                size = size,
-                style = Stroke(width = 2f)
-            )
-
-            val hue = parsedSelectedColor.toHue()
-            val thumbX = (hue / 360f) * size.width
-
-            drawCircle(
-                color = Color.White,
-                radius = 8.dp.toPx(),
-                center = androidx.compose.ui.geometry.Offset(thumbX, size.height / 2),
-                style = Stroke(width = 2.dp.toPx())
-            )
-            drawCircle(
-                color = parsedSelectedColor,
-                radius = 6.dp.toPx(),
-                center = androidx.compose.ui.geometry.Offset(thumbX, size.height / 2)
-            )
-        }
-    }
-}
-
-fun hueToColor(hue: Float): Color {
-    val h = hue / 60.0f
-    val x = 1.0f - kotlin.math.abs((h % 2.0f) - 1.0f)
-    val r: Float
-    val g: Float
-    val b: Float
-    when {
-        h < 1.0f -> { r = 1.0f; g = x; b = 0.0f }
-        h < 2.0f -> { r = x; g = 1.0f; b = 0.0f }
-        h < 3.0f -> { r = 0.0f; g = 1.0f; b = x }
-        h < 4.0f -> { r = 0.0f; g = x; b = 1.0f }
-        h < 5.0f -> { r = x; g = 0.0f; b = 1.0f }
-        else -> { r = 1.0f; g = 0.0f; b = x }
-    }
-    return Color(r, g, b)
-}
-
-fun Color.toHex(): String {
-    val r = (this.red * 255).toInt().coerceIn(0, 255)
-    val g = (this.green * 255).toInt().coerceIn(0, 255)
-    val b = (this.blue * 255).toInt().coerceIn(0, 255)
-    return "#" + r.toHexString() + g.toHexString() + b.toHexString()
-}
-
-private fun Int.toHexString(): String {
-    val s = this.toString(16).uppercase()
-    return if (s.length == 1) "0$s" else s
-}
-
-fun Color.toHue(): Float {
-    val r = this.red
-    val g = this.green
-    val b = this.blue
-    val max = maxOf(r, g, b)
-    val min = minOf(r, g, b)
-    val delta = max - min
-    if (delta < 0.001f) return 0f
-    
-    var h = when (max) {
-        r -> (g - b) / delta + (if (g < b) 6f else 0f)
-        g -> (b - r) / delta + 2f
-        else -> (r - g) / delta + 4f
-    }
-    h *= 60f
-    return h
-}
-
-// Deleted ReaderMarginSliderItem component
 
 private fun magnetizeProgress(progress: Float, spineSize: Int): Float {
     if (spineSize <= 1) return progress

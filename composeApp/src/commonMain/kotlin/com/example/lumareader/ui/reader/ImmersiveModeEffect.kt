@@ -13,4 +13,9 @@ import androidx.compose.runtime.Composable
  * @param extendBehindNotch When true, content is allowed to draw behind the display cutout.
  */
 @Composable
-expect fun ImmersiveModeEffect(isUiVisible: Boolean, extendBehindNotch: Boolean)
+expect fun ImmersiveModeEffect(
+    isUiVisible: Boolean,
+    extendBehindNotch: Boolean,
+    keepScreenOn: Boolean = false,
+    immersiveMode: Boolean = true
+)

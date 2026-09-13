@@ -8,6 +8,8 @@ import androidx.compose.ui.unit.sp
 
 // Clean premium geometric sans-serif typeface matching Google Sans
 expect val GoogleSans: FontFamily
+expect val LiterataFont: FontFamily
+expect val InterFont: FontFamily
 
 // Set of Material typography styles to start with
 // Set of Material typography styles mapping all text elements to Google Sans

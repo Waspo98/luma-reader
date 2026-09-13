@@ -58,19 +58,41 @@ private val AmoledColorScheme = darkColorScheme(
     surfaceContainerHigh = AmoledSurfaceContainerHigh
 )
 
+private val SepiaColorScheme = lightColorScheme(
+    primary = SepiaPrimary,
+    onPrimary = SepiaOnPrimary,
+    primaryContainer = SepiaPrimaryContainer,
+    onPrimaryContainer = SepiaOnPrimaryContainer,
+    secondary = SepiaSecondary,
+    onSecondary = SepiaOnSecondary,
+    background = SepiaBackground,
+    onBackground = SepiaOnBackground,
+    surface = SepiaSurface,
+    onSurface = SepiaOnSurface,
+    outline = SepiaOutline,
+    surfaceContainer = SepiaSurfaceContainer,
+    surfaceContainerLow = SepiaSurfaceContainerLow,
+    surfaceContainerHigh = SepiaSurfaceContainerHigh
+)
+
 @Composable
 fun LumaReaderTheme(
     themeMode: LumaThemeMode = LumaThemeMode.SYSTEM,
+    dayTheme: LumaThemeMode = LumaThemeMode.LIGHT,
+    nightTheme: LumaThemeMode = LumaThemeMode.SLATE_GRAY,
     content: @Composable () -> Unit
 ) {
     val darkTheme = isSystemInDarkTheme()
-    val colorScheme = when (themeMode) {
+    val activeMode = when (themeMode) {
+        LumaThemeMode.SYSTEM -> if (darkTheme) nightTheme else dayTheme
+        else -> themeMode
+    }
+    val colorScheme = when (activeMode) {
         LumaThemeMode.LIGHT -> LightColorScheme
+        LumaThemeMode.WARM_SEPIA -> SepiaColorScheme
         LumaThemeMode.SLATE_GRAY -> SlateColorScheme
         LumaThemeMode.AMOLED_BLACK -> AmoledColorScheme
-        LumaThemeMode.SYSTEM -> {
-            if (darkTheme) SlateColorScheme else LightColorScheme
-        }
+        LumaThemeMode.SYSTEM -> if (darkTheme) SlateColorScheme else LightColorScheme
     }
 
     MaterialTheme(

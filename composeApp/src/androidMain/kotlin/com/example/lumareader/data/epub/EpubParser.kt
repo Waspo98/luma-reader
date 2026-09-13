@@ -17,8 +17,8 @@ actual class EpubParser {
             throw IllegalArgumentException("EPUB file does not exist: $epubFilePath")
         }
 
-        // Generate unique MD5 hash for the file path to serve as bookId
-        val bookId = getMd5("${epubFile.canonicalPath}:${epubFile.length()}")
+        // Generate unique MD5 hash for the file content to serve as deterministic bookId
+        val bookId = getFileMd5(epubFile)
         val targetDir = File(cacheDir, "epubs/$bookId")
         
         // Unzip EPUB if it hasn't been unzipped yet or if directories are missing
@@ -322,6 +322,18 @@ actual class EpubParser {
             result.add(prefixed.item(i) as Element)
         }
         return result
+    }
+
+    private fun getFileMd5(file: File): String {
+        val md = MessageDigest.getInstance("MD5")
+        file.inputStream().use { input ->
+            val buffer = ByteArray(16384)
+            var read: Int
+            while (input.read(buffer).also { read = it } != -1) {
+                md.update(buffer, 0, read)
+            }
+        }
+        return md.digest().joinToString("") { "%02x".format(it) }
     }
 
     private fun getMd5(input: String): String {

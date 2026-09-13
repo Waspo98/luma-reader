@@ -33,12 +33,25 @@ private fun Context.findActivity(): Activity? {
  * only fires once when the screen leaves composition, NOT on every chapter swipe.
  */
 @Composable
-actual fun ImmersiveModeEffect(isUiVisible: Boolean, extendBehindNotch: Boolean) {
+actual fun ImmersiveModeEffect(
+    isUiVisible: Boolean,
+    extendBehindNotch: Boolean,
+    keepScreenOn: Boolean,
+    immersiveMode: Boolean
+) {
     val context = LocalContext.current
     val activity = remember(context) { context.findActivity() }
 
-    LaunchedEffect(activity, isUiVisible, extendBehindNotch) {
+    LaunchedEffect(activity, isUiVisible, extendBehindNotch, keepScreenOn, immersiveMode) {
         val window = activity?.window ?: return@LaunchedEffect
+
+        // Manage screen wake lock while reading
+        if (keepScreenOn) {
+            window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        } else {
+            window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
+
         val insetsController = WindowCompat.getInsetsController(window, window.decorView)
         insetsController.systemBarsBehavior =
             WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
@@ -54,18 +67,18 @@ actual fun ImmersiveModeEffect(isUiVisible: Boolean, extendBehindNotch: Boolean)
             window.attributes = lp
         }
 
-        if (isUiVisible) {
+        if (isUiVisible || !immersiveMode) {
             insetsController.show(WindowInsetsCompat.Type.systemBars())
         } else {
             insetsController.hide(WindowInsetsCompat.Type.systemBars())
         }
     }
 
-    // Restore system bars when the reader screen exits composition.
-    // This fires exactly once per reader session, not once per chapter.
+    // Restore system bars and clear keep-screen-on when the reader screen exits composition.
     DisposableEffect(activity) {
         onDispose {
             val window = activity?.window ?: return@onDispose
+            window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
             val insetsController = WindowCompat.getInsetsController(window, window.decorView)
             insetsController.show(WindowInsetsCompat.Type.systemBars())
             // Also reset cutout mode back to the safe default

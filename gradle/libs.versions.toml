@@ -17,6 +17,10 @@ nav3Core = "1.0.1"
 lifecycleViewmodelNav3 = "2.10.0"
 okio = "3.9.0"
 kotlinxSerializationJson = "1.6.3"
+readium = "3.3.0"
+androidxFragment = "1.8.6"
+desugarJdkLibs = "2.1.5"
+playServicesAuth = "21.3.0"
 
 [libraries]
 androidx-core-ktx = { module = "androidx.core:core-ktx", version.ref = "androidxCore" }
@@ -44,6 +48,12 @@ androidx-lifecycle-viewmodel-navigation3 = { module = "androidx.lifecycle:lifecy
 okio = { module = "com.squareup.okio:okio", version.ref = "okio" }
 kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "kotlinxSerializationJson" }
 kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "coroutines" }
+readium-shared = { module = "org.readium.kotlin-toolkit:readium-shared", version.ref = "readium" }
+readium-streamer = { module = "org.readium.kotlin-toolkit:readium-streamer", version.ref = "readium" }
+readium-navigator = { module = "org.readium.kotlin-toolkit:readium-navigator", version.ref = "readium" }
+androidx-fragment-ktx = { module = "androidx.fragment:fragment-ktx", version.ref = "androidxFragment" }
+desugar-jdk-libs = { module = "com.android.tools:desugar_jdk_libs", version.ref = "desugarJdkLibs" }
+play-services-auth = { module = "com.google.android.gms:play-services-auth", version.ref = "playServicesAuth" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "androidGradlePlugin" }

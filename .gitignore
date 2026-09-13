@@ -28,3 +28,5 @@ temp_epub_extract/
 temp.js
 pulled_file.html
 build_output.txt
+orig_readium/
+tmp_classes/
